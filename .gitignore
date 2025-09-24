@@ -1,27 +1,23 @@
-# Node / frontend
-frontend/node_modules/
-frontend/.vite/
-*.log
-
-# Python / backend
+# Python
 backend/.venv/
 __pycache__/
-*.pyc
 
-# App data & uploads (big / sensitive)
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Local data (don’t version uploads/results)
 backend/data/uploads/
 backend/data/drafts/
 backend/data/reviews/
 backend/data/final/
 backend/data/provenance/
 
-# Env files (secrets & local configs)
+# Env files (secrets)
 backend/.env
-frontend/.env
 frontend/.env.local
-.env
-.env.local
 
-# OS cruft
+# OS/editor noise
 .DS_Store
 Thumbs.db
+.vscode/
