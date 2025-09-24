@@ -1,0 +1,27 @@
+# Node / frontend
+frontend/node_modules/
+frontend/.vite/
+*.log
+
+# Python / backend
+backend/.venv/
+__pycache__/
+*.pyc
+
+# App data & uploads (big / sensitive)
+backend/data/uploads/
+backend/data/drafts/
+backend/data/reviews/
+backend/data/final/
+backend/data/provenance/
+
+# Env files (secrets & local configs)
+backend/.env
+frontend/.env
+frontend/.env.local
+.env
+.env.local
+
+# OS cruft
+.DS_Store
+Thumbs.db
