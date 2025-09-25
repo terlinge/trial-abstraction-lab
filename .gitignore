@@ -1,23 +1,28 @@
 # Python
-backend/.venv/
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
 
-# Node
+# Virtual env
+backend/.venv/
+venv/
+
+# Local data & uploads
+backend/data/
+!backend/data/.gitkeep
+
+# Secrets
+backend/.env
+
+# Node/Frontend
 frontend/node_modules/
 frontend/dist/
+*.map
 
-# Local data (don’t version uploads/results)
-backend/data/uploads/
-backend/data/drafts/
-backend/data/reviews/
-backend/data/final/
-backend/data/provenance/
-
-# Env files (secrets)
-backend/.env
-frontend/.env.local
-
-# OS/editor noise
+# OS/editor
 .DS_Store
 Thumbs.db
 .vscode/
+.idea/

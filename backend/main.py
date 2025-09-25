@@ -12,9 +12,11 @@ from extractors import extract_first_pass
 
 # ---------------------- Settings ----------------------
 class Settings(BaseSettings):
-    MOCK_MODE: bool = True        # set MOCK_MODE=false in .env to use PDF parser
+    MOCK_MODE: bool = True
     OPENAI_API_KEY: str | None = None
     PORT: int = 8000
+    GROBID_URL: str | None = None   # <-- add this line
+
     class Config:
         env_file = os.path.join(os.path.dirname(__file__), ".env")
 
