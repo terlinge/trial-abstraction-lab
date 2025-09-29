@@ -1,4 +1,4 @@
-// App.tsx  (full file)
+// App.tsx  — Arms: tri-state radios + custom edit, merge respects custom
 import React, { useEffect, useMemo, useState } from "react";
 import "./app.css";
 
@@ -23,13 +23,15 @@ type Outcome = {
   subgroups: any[];
 };
 
-// ⬇️ minimal addition: allow optional _flags from backend
-type Draft = { study: Study; arms: Arm[]; outcomes: Outcome[]; _flags?: { grobid?: boolean; llm?: boolean } };
+type Flags = { grobid?: boolean; llm?: boolean };
+type Draft = { study: Study; arms: Arm[]; outcomes: Outcome[]; _flags?: Flags };
 
 type ReviewField = {
-  accepted?: boolean;
-  value?: any;
+  accepted?: boolean;      // true => include in final
+  value?: any;             // if accepted & set, becomes the field value
   evidence?: string;
+  // UI-only helper (not required by backend)
+  mode?: "draft" | "custom" | "exclude";
 };
 
 type ReviewerReview = {
@@ -44,17 +46,6 @@ type ServerDoc = {
   reviewA?: ReviewerReview | null;
   reviewB?: ReviewerReview | null;
   final?: Draft | null;
-};
-
-// ⬇️ minimal addition: health type for /api/health banner
-type Health = {
-  mock_mode: boolean;
-  grobid_url: string | null;
-  grobid_alive: boolean;
-  use_llm: boolean;
-  llm_configured: boolean;
-  openai_model: string | null;
-  api_port: number;
 };
 
 const API = (import.meta as any).env?.VITE_API || "http://127.0.0.1:8001";
@@ -85,27 +76,20 @@ function buildAcceptAll(draft?: Draft): ReviewerReview {
   const r: ReviewerReview = { study: {}, arms: {} };
   if (draft?.study) {
     (Object.keys(draft.study) as (keyof Study)[]).forEach((k) => {
-      (r.study as any)[k] = { accepted: true, value: (draft.study as any)[k] };
+      const v = (draft.study as any)[k];
+      (r.study as any)[k] = {
+        accepted: v != null && v !== "",
+        value: v,
+        mode: v != null && v !== "" ? "draft" : "exclude",
+      };
     });
   }
   if (draft?.arms) {
     draft.arms.forEach((a) => {
-      r.arms![a.arm_id] = { accepted: true, value: a };
+      r.arms![a.arm_id] = { accepted: true, value: a, mode: "draft" };
     });
   }
   return r;
-}
-
-function getAcceptedStudyValues(draft: Draft | undefined, review: ReviewerReview | undefined) {
-  const out: Partial<Study> = {};
-  if (!draft || !review?.study) return out;
-  for (const k of Object.keys(review.study) as (keyof Study)[]) {
-    const rf = review.study[k];
-    if (rf?.accepted) {
-      out[k] = rf.value ?? (draft.study as any)[k];
-    }
-  }
-  return out;
 }
 
 function diffStudy(a?: ReviewerReview, b?: ReviewerReview) {
@@ -126,14 +110,312 @@ function diffStudy(a?: ReviewerReview, b?: ReviewerReview) {
   return conflicts;
 }
 
+// ----------------- Study FieldEditor -----------------
+function stringifyValueForEditor(v: any, key: keyof Study): string {
+  if (key === "authors") {
+    const arr = Array.isArray(v) ? v : (typeof v === "string" && v.trim() ? v.split(/\s*;\s*|\s*,\s*/g) : []);
+    return arr.join("; ");
+  }
+  if (typeof v === "number") return String(v);
+  if (v == null) return "";
+  return String(v);
+}
+
+function parseEditorToValue(text: string, key: keyof Study, draftVal: any): any {
+  if (!text.trim()) return null;
+
+  if (key === "authors") {
+    return text.split(/;|,/g).map((s) => s.trim()).filter(Boolean);
+  }
+  if (typeof draftVal === "number") {
+    const n = Number(text);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (key === "year") {
+    const n = Number(text);
+    return Number.isFinite(n) ? n : null;
+  }
+  return text;
+}
+
+function FieldEditor({
+  fieldKey,
+  draftVal,
+  rf,
+  radioName,
+  onChange,
+}: {
+  fieldKey: keyof Study;
+  draftVal: any;
+  rf: ReviewField;
+  radioName: string;
+  onChange: (upd: Partial<ReviewField>) => void;
+}) {
+  // derive mode if not set
+  let mode: ReviewField["mode"] =
+    rf.mode ||
+    (rf.accepted
+      ? (JSON.stringify(rf.value) === JSON.stringify(draftVal) ? "draft" : "custom")
+      : "exclude");
+
+  const [customText, setCustomText] = useState(
+    mode === "custom" ? stringifyValueForEditor(rf.value, fieldKey) : ""
+  );
+
+  useEffect(() => {
+    if (mode === "custom") {
+      setCustomText(stringifyValueForEditor(rf.value, fieldKey));
+    } else {
+      setCustomText("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  function setMode(next: "draft" | "custom" | "exclude") {
+    if (next === "draft") {
+      onChange({ mode: "draft", accepted: true, value: draftVal });
+    } else if (next === "custom") {
+      const parsed = parseEditorToValue(customText, fieldKey, draftVal);
+      onChange({ mode: "custom", accepted: true, value: parsed });
+    } else {
+      onChange({ mode: "exclude", accepted: false, value: undefined });
+    }
+  }
+
+  function saveCustom(text: string) {
+    setCustomText(text);
+    const parsed = parseEditorToValue(text, fieldKey, draftVal);
+    onChange({ mode: "custom", accepted: true, value: parsed });
+  }
+
+  const draftStr = stringifyValueForEditor(draftVal, fieldKey);
+  const isAuthors = fieldKey === "authors";
+  const isNumber = typeof draftVal === "number" || fieldKey === "year";
+
+  return (
+    <div className="field-editor">
+      <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+        <label className="radio">
+          <input
+            type="radio"
+            name={radioName}
+            checked={mode === "draft"}
+            onChange={() => setMode("draft")}
+          />
+          Use Draft
+        </label>
+        <label className="radio">
+          <input
+            type="radio"
+            name={radioName}
+            checked={mode === "custom"}
+            onChange={() => setMode("custom")}
+          />
+          Use Custom
+        </label>
+        <label className="radio">
+          <input
+            type="radio"
+            name={radioName}
+            checked={mode === "exclude"}
+            onChange={() => setMode("exclude")}
+          />
+          Exclude
+        </label>
+        <input
+          className="text"
+          placeholder="Evidence pointer (page/figure/etc.)"
+          value={rf.evidence || ""}
+          onChange={(e) => onChange({ evidence: e.target.value })}
+          style={{ minWidth: 240 }}
+        />
+      </div>
+
+      <div style={{ marginTop: 6 }}>
+        <div style={{ fontSize: ".85rem", color: "var(--muted)" }}>Draft value</div>
+        <div className="code" style={{ padding: "6px 8px", fontSize: ".9rem" }}>
+          {draftStr || <span className="label">(empty)</span>}
+        </div>
+      </div>
+
+      {mode === "custom" && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: ".85rem", color: "var(--muted)" }}>Custom value</div>
+          {isAuthors ? (
+            <textarea
+              className="text"
+              rows={3}
+              placeholder="Author A; Author B; Author C"
+              value={customText}
+              onChange={(e) => saveCustom(e.target.value)}
+            />
+          ) : (
+            <input
+              className="text"
+              placeholder={isNumber ? "e.g., 2006" : "Type your corrected value"}
+              value={customText}
+              onChange={(e) => saveCustom(e.target.value)}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ----------------- Arm Editor -----------------
+function ArmEditor({
+  draftArm,
+  rf,
+  radioName,
+  onChange,
+}: {
+  draftArm: Arm;
+  rf: ReviewField;
+  radioName: string;
+  onChange: (upd: Partial<ReviewField>) => void;
+}) {
+  // derive mode if not set
+  const equalToDraft = rf.value && typeof rf.value === "object"
+    ? rf.value.arm_id === draftArm.arm_id &&
+      rf.value.label === draftArm.label &&
+      (rf.value.n_randomized ?? null) === (draftArm.n_randomized ?? null)
+    : false;
+
+  let mode: ReviewField["mode"] =
+    rf.mode || (rf.accepted ? (equalToDraft ? "draft" : "custom") : "exclude");
+
+  // local edit state for custom
+  const [labelText, setLabelText] = useState(
+    mode === "custom" ? (rf.value?.label ?? draftArm.label) : draftArm.label
+  );
+  const [nRandText, setNRandText] = useState(
+    mode === "custom"
+      ? (rf.value?.n_randomized ?? draftArm.n_randomized ?? "")
+      : (draftArm.n_randomized ?? "")
+  );
+
+  useEffect(() => {
+    if (mode === "custom") {
+      setLabelText(rf.value?.label ?? draftArm.label);
+      setNRandText(rf.value?.n_randomized ?? draftArm.n_randomized ?? "");
+    } else {
+      setLabelText(draftArm.label);
+      setNRandText(draftArm.n_randomized ?? "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, draftArm.arm_id]);
+
+  function toArmValue(lbl: string, nText: any): Arm {
+    const n = nText === "" ? null : Number(nText);
+    return {
+      arm_id: draftArm.arm_id, // arm_id stays stable
+      label: lbl,
+      n_randomized: Number.isFinite(n) ? n : null,
+    };
+  }
+
+  function setMode(next: "draft" | "custom" | "exclude") {
+    if (next === "draft") {
+      onChange({ mode: "draft", accepted: true, value: { ...draftArm } });
+    } else if (next === "custom") {
+      onChange({ mode: "custom", accepted: true, value: toArmValue(labelText, nRandText) });
+    } else {
+      onChange({ mode: "exclude", accepted: false, value: undefined });
+    }
+  }
+
+  function saveCustom(lbl: string, nText: any) {
+    setLabelText(lbl);
+    setNRandText(nText);
+    onChange({ mode: "custom", accepted: true, value: toArmValue(lbl, nText) });
+  }
+
+  return (
+    <div className="field-editor">
+      <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+        <label className="radio">
+          <input
+            type="radio"
+            name={radioName}
+            checked={mode === "draft"}
+            onChange={() => setMode("draft")}
+          />
+          Use Draft
+        </label>
+        <label className="radio">
+          <input
+            type="radio"
+            name={radioName}
+            checked={mode === "custom"}
+            onChange={() => setMode("custom")}
+          />
+          Use Custom
+        </label>
+        <label className="radio">
+          <input
+            type="radio"
+            name={radioName}
+            checked={mode === "exclude"}
+            onChange={() => setMode("exclude")}
+          />
+          Exclude
+        </label>
+        <input
+          className="text"
+          placeholder="Evidence pointer"
+          value={rf.evidence || ""}
+          onChange={(e) => onChange({ evidence: e.target.value })}
+          style={{ minWidth: 240 }}
+        />
+      </div>
+
+      <div style={{ marginTop: 6 }}>
+        <div style={{ fontSize: ".85rem", color: "var(--muted)" }}>Draft arm</div>
+        <div className="code" style={{ padding: "6px 8px", fontSize: ".9rem" }}>
+          {draftArm.arm_id} — {draftArm.label}
+          {draftArm.n_randomized != null ? ` (n=${draftArm.n_randomized})` : ""}
+        </div>
+      </div>
+
+      {mode === "custom" && (
+        <div style={{ marginTop: 8, display: "grid", gap: 8, gridTemplateColumns: "minmax(220px, 360px) 160px" }}>
+          <div>
+            <div style={{ fontSize: ".85rem", color: "var(--muted)" }}>Custom label</div>
+            <input
+              className="text"
+              placeholder="e.g., budesonide 9 mg"
+              value={labelText}
+              onChange={(e) => saveCustom(e.target.value, nRandText)}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: ".85rem", color: "var(--muted)" }}>N randomized</div>
+            <input
+              className="text"
+              type="number"
+              min={0}
+              placeholder="e.g., 42"
+              value={String(nRandText)}
+              onChange={(e) => saveCustom(labelText, e.target.value)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- Reviewer Panel -------------
 function ReviewerPanel({
   name,
+  docId,
   draft,
   initial,
   onSave,
 }: {
   name: "A" | "B";
+  docId?: string;
   draft?: Draft;
   initial?: ReviewerReview | null;
   onSave: (r: ReviewerReview) => Promise<void>;
@@ -141,9 +423,46 @@ function ReviewerPanel({
   const [review, setReview] = useState<ReviewerReview>(initial || { study: {}, arms: {} });
   const [toast, setToast] = useState("");
 
+  // If a saved review arrives, load it
   useEffect(() => {
     if (initial) setReview(initial);
   }, [initial]);
+
+  // Seed study defaults
+  useEffect(() => {
+    if (!draft) return;
+    const hasAny = review.study && Object.keys(review.study).length > 0;
+    if (hasAny) return;
+    const seeded: Partial<Record<keyof Study, ReviewField>> = {};
+    ([
+      "title","authors","doi","year","design","condition","country","nct_id","pmid","notes"
+    ] as (keyof Study)[]).forEach((k) => {
+      const v = (draft.study as any)[k];
+      if (v != null && !(Array.isArray(v) && v.length === 0) && v !== "") {
+        seeded[k] = { accepted: true, value: v, mode: "draft" };
+      } else {
+        seeded[k] = { accepted: false, value: undefined, mode: "exclude" };
+      }
+    });
+    setReview((prev) => ({ ...prev, study: seeded, arms: prev.arms || {} }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.study]);
+
+  // Seed arm defaults (Use Draft by default)
+  useEffect(() => {
+    if (!draft?.arms?.length) return;
+    setReview((prev) => {
+      const next = { ...(prev || {}), arms: { ...(prev.arms || {}) } };
+      let changed = false;
+      draft.arms.forEach((a) => {
+        if (!next.arms![a.arm_id]) {
+          next.arms![a.arm_id] = { accepted: true, value: a, mode: "draft" };
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [draft?.arms]);
 
   function setStudyField(k: keyof Study, upd: Partial<ReviewField>) {
     setReview((prev) => ({
@@ -190,6 +509,9 @@ function ReviewerPanel({
     "notes",
   ];
 
+  // distinct radio group names per field + reviewer (+ doc) to prevent cross-field interference
+  const radioPrefix = `mode-${name}-${docId || "doc"}`;
+
   return (
     <Section title={`Reviewer ${name}`}>
       <div className="row">
@@ -209,30 +531,23 @@ function ReviewerPanel({
           <div className="kv">
             {studyKeys.map((k) => {
               const draftVal = (draft.study as any)[k];
-              const rf = review.study?.[k] || {};
-              const valStr =
-                Array.isArray(draftVal) ? draftVal.join("; ") : draftVal == null ? "" : String(draftVal);
+              const rf: ReviewField =
+                review.study?.[k] ??
+                (draftVal != null && draftVal !== "" && (!Array.isArray(draftVal) || draftVal.length > 0)
+                  ? { accepted: true, value: draftVal, mode: "draft" }
+                  : { accepted: false, value: undefined, mode: "exclude" });
+
               return (
                 <React.Fragment key={String(k)}>
                   <div className="label">{k}</div>
                   <div>
-                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                      <input
-                        type="checkbox"
-                        checked={!!rf.accepted}
-                        onChange={(e) => setStudyField(k, { accepted: e.target.checked, value: draftVal })}
-                        title="Accept this field from draft"
-                      />
-                      <input
-                        className="text"
-                        placeholder="Evidence pointer (page/figure/etc.)"
-                        value={rf.evidence || ""}
-                        onChange={(e) => setStudyField(k, { evidence: e.target.value })}
-                      />
-                    </div>
-                    <div style={{ fontFamily: "ui-monospace, monospace", fontSize: ".9rem", marginTop: 4 }}>
-                      {valStr || <span className="label">(empty)</span>}
-                    </div>
+                    <FieldEditor
+                      fieldKey={k}
+                      draftVal={draftVal}
+                      rf={rf}
+                      radioName={`${radioPrefix}-${String(k)}`}
+                      onChange={(upd) => setStudyField(k, upd)}
+                    />
                   </div>
                 </React.Fragment>
               );
@@ -242,26 +557,25 @@ function ReviewerPanel({
           <div className="divider" />
           <h3>Arms</h3>
           {draft.arms?.length ? (
-            draft.arms.map((a) => {
-              const rf = review.arms?.[a.arm_id] || {};
-              return (
-                <div key={a.arm_id} className="row" style={{ alignItems: "center" }}>
-                  <input
-                    type="checkbox"
-                    checked={!!rf.accepted}
-                    onChange={(e) => setArm(a.arm_id, { accepted: e.target.checked, value: a })}
-                  />
-                  <div className="badge">{a.arm_id}</div>
-                  <div>{a.label}</div>
-                  <input
-                    className="text"
-                    placeholder="Evidence pointer"
-                    value={rf.evidence || ""}
-                    onChange={(e) => setArm(a.arm_id, { evidence: e.target.value })}
-                  />
-                </div>
-              );
-            })
+            <div className="kv">
+              {draft.arms.map((a) => {
+                const rf = review.arms?.[a.arm_id] || { accepted: true, value: a, mode: "draft" };
+                return (
+                  <React.Fragment key={a.arm_id}>
+                    <div className="label">{a.arm_id}</div>
+                    <div>
+                      <div style={{ marginBottom: 4, fontWeight: 600 }}>{a.label}</div>
+                      <ArmEditor
+                        draftArm={a}
+                        rf={rf}
+                        radioName={`${radioPrefix}-arm-${a.arm_id}`}
+                        onChange={(upd) => setArm(a.arm_id, upd)}
+                      />
+                    </div>
+                  </React.Fragment>
+                );
+              })}
+            </div>
           ) : (
             <div className="label">(no arms)</div>
           )}
@@ -280,39 +594,16 @@ export default function App() {
   const [serverDoc, setServerDoc] = useState<ServerDoc | null>(null);
   const [toast, setToast] = useState("");
 
-  // ⬇️ minimal addition: health banner state + poll /api/health
-  const [health, setHealth] = useState<Health | null>(null);
-  useEffect(() => {
-    let stop = false;
-    const tick = async () => {
-      try {
-        const r = await fetch(`${API}/api/health`);
-        if (!r.ok) throw new Error("health failed");
-        const h = (await r.json()) as Health;
-        if (!stop) setHealth(h);
-      } catch {
-        if (!stop) setHealth(null);
-      }
-    };
-    tick();
-    const id = setInterval(tick, 5000);
-    return () => {
-      stop = true;
-      clearInterval(id);
-    };
-  }, []);
-
-  // Your existing GROBID detection by notes
-  const grobidOn = useMemo(() => {
+  // Old heuristic from notes:
+  const grobidFromNotes = useMemo(() => {
     const note = serverDoc?.draft?.study?.notes || "";
     return /GROBID=on/i.test(note);
   }, [serverDoc]);
 
-  // ⬇️ minimal addition: prefer _flags when present; fall back to your notes check
-  const draftFlags = serverDoc?.draft?._flags || {};
-  const grobidLine =
-    draftFlags.grobid != null ? (draftFlags.grobid ? "GROBID: ON" : "GROBID: OFF") : (grobidOn ? "GROBID: ON" : "GROBID: OFF (fallback parser)");
-  const llmLine = draftFlags.llm ? "LLM: USED" : "LLM: NOT USED";
+  // Preferred explicit flags if present:
+  const flags = serverDoc?.draft?._flags || {};
+  const grobidOn = typeof flags.grobid === "boolean" ? flags.grobid : grobidFromNotes;
+  const llmOn = !!flags.llm;
 
   async function upload() {
     if (!file) return;
@@ -359,7 +650,7 @@ export default function App() {
         await refresh();
         return;
       }
-    } catch (_) {
+    } catch {
       /* backend route might not exist; fall back below */
     }
     // Fallback: save into our local serverDoc state so you can still merge/copy
@@ -385,7 +676,7 @@ export default function App() {
     // start from draft then overlay A then B for accepted fields
     const mergedStudy: Study = { ...(draft.study || {}) };
 
-    const put = (rev?: ReviewerReview) => {
+    const putStudy = (rev?: ReviewerReview) => {
       if (!rev?.study) return;
       for (const k of Object.keys(rev.study) as (keyof Study)[]) {
         const rf = rev.study[k];
@@ -395,17 +686,26 @@ export default function App() {
       }
     };
 
-    put(a);
-    put(b); // B wins ties by default; change order if you prefer A to win
+    putStudy(a);
+    putStudy(b); // B wins ties by default; change order if you prefer A to win
 
-    const mergedArms: Arm[] = [];
-    const acceptedArmIds = new Set<string>([
-      ...(a?.arms ? Object.keys(a.arms).filter((id) => a.arms?.[id]?.accepted) : []),
-      ...(b?.arms ? Object.keys(b.arms).filter((id) => b.arms?.[id]?.accepted) : []),
-    ]);
-    draft.arms.forEach((arm) => {
-      if (acceptedArmIds.has(arm.arm_id)) mergedArms.push(arm);
-    });
+    // Arms: respect custom values if provided, include only accepted
+    const byId = new Map<string, Arm>();
+    const takeArms = (rev?: ReviewerReview) => {
+      if (!rev?.arms) return;
+      for (const [id, rf] of Object.entries(rev.arms)) {
+        if (!rf?.accepted) continue;
+        const fromDraft = draft.arms.find((x) => x.arm_id === id);
+        const val: Arm | undefined = rf.value
+          ? { arm_id: id, label: rf.value.label ?? fromDraft?.label ?? id, n_randomized: rf.value.n_randomized ?? fromDraft?.n_randomized ?? null }
+          : (fromDraft ? { ...fromDraft } : undefined);
+        if (val) byId.set(id, val); // later reviewer wins
+      }
+    };
+    takeArms(a);
+    takeArms(b);
+
+    const mergedArms = Array.from(byId.values());
 
     return { study: mergedStudy, arms: mergedArms, outcomes: draft.outcomes || [] };
   }
@@ -415,44 +715,21 @@ export default function App() {
 
   return (
     <div className="container">
-      {/* ⬇️ minimal addition: status banner */}
-      <div
-        style={{
-          padding: "8px 12px",
-          borderRadius: 8,
-          background: "#0f172a",
-          color: "white",
-          marginBottom: 16,
-        }}
-      >
-        <strong>Backend:</strong>{" "}
-        {health ? (
-          <>
-            ✅ running (port {health.api_port}) &nbsp;|&nbsp; <strong>Mock</strong>:{" "}
-            {health.mock_mode ? "ON" : "OFF"} &nbsp;|&nbsp; <strong>GROBID</strong>:{" "}
-            {health.grobid_alive ? "🟢 alive" : "🔴 down"}{" "}
-            {health.grobid_url ? `(${health.grobid_url})` : ""}
-            &nbsp;|&nbsp; <strong>LLM</strong>:{" "}
-            {health.use_llm ? (health.llm_configured ? `🟢 ${health.openai_model}` : "⚠ on, no key") : "OFF"}
-          </>
-        ) : (
-          "⚠ cannot reach backend /api/health"
-        )}
-      </div>
-
       <h1>Trial Abstraction Prototype</h1>
+
+      {/* --- Status / indicator bar --- */}
+      <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <span className="badge">GROBID: {grobidOn ? "ON" : "OFF"}</span>
+        <span className="badge">LLM: {llmOn ? "ON" : "OFF"}</span>
+        {serverDoc?.doc_id && <span className="badge">Doc: {serverDoc.doc_id}</span>}
+        {serverDoc?.filename && <span className="badge">File: {serverDoc.filename}</span>}
+      </div>
 
       <Section title="1) Upload PDF">
         <div className="row">
           <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} />
           <button className="btn" onClick={upload}>Upload</button>
         </div>
-        {serverDoc?.filename && (
-          <div style={{ marginTop: 8 }}>
-            <span className="badge">Doc ID: {serverDoc.doc_id}</span>&nbsp; | &nbsp;
-            <span className="label">File:</span> {serverDoc.filename}
-          </div>
-        )}
       </Section>
 
       <Section title="2) Draft Extraction">
@@ -469,15 +746,10 @@ export default function App() {
 
         {serverDoc?.draft ? (
           <>
-            {/* existing badge kept */}
             <div style={{ marginTop: 8 }}>
               <span className="badge">{grobidOn ? "GROBID: ON" : "GROBID: OFF (fallback parser)"}</span>
+              <span className="badge" style={{ marginLeft: 6 }}>{llmOn ? "LLM: ON" : "LLM: OFF"}</span>
             </div>
-            {/* ⬇️ minimal addition: explicit draft status line */}
-            <div style={{ marginTop: 6, fontSize: 14 }}>
-              <strong>Draft Status:</strong> <code>{grobidLine}</code> &nbsp;|&nbsp; <code>{llmLine}</code>
-            </div>
-
             <div className="code" style={{ marginTop: 10 }}>
               <pre>{JSON.stringify(serverDoc.draft, null, 2)}</pre>
             </div>
@@ -489,6 +761,7 @@ export default function App() {
 
       <ReviewerPanel
         name="A"
+        docId={docId}
         draft={serverDoc?.draft || undefined}
         initial={serverDoc?.reviewA || undefined}
         onSave={(r) => saveReview("A", r)}
@@ -496,6 +769,7 @@ export default function App() {
 
       <ReviewerPanel
         name="B"
+        docId={docId}
         draft={serverDoc?.draft || undefined}
         initial={serverDoc?.reviewB || undefined}
         onSave={(r) => saveReview("B", r)}
