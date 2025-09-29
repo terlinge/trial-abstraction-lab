@@ -1,46 +1,40 @@
-import os, json, datetime
+# backend/storage.py
+import os
+import json
+from typing import Any, Dict
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-PROV_DIR = os.path.join(DATA_DIR, "provenance")
+ROOT = os.path.abspath(os.path.dirname(__file__))
+DATA_DIR = os.path.join(ROOT, "data")
+DOCS_DIR = os.path.join(DATA_DIR, "docs")
+UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 
-def _ensure_dir(path: str):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+def ensure_dirs(paths: Dict[str, str]) -> None:
+    for p in paths.values():
+        d = os.path.dirname(p)
+        if d:
+            os.makedirs(d, exist_ok=True)
 
-def save_json(path: str, obj):
-    _ensure_dir(path)
+def get_doc_paths(doc_id: str) -> Dict[str, str]:
+    doc_folder = os.path.join(DOCS_DIR, doc_id)
+    return {
+        "folder": doc_folder,
+        "doc": os.path.join(doc_folder, "doc.json"),
+        "review_A": os.path.join(doc_folder, "review_A.json"),
+        "review_B": os.path.join(doc_folder, "review_B.json"),
+        "final": os.path.join(doc_folder, "final.json"),
+        "pdf": os.path.join(UPLOADS_DIR, f"{doc_id}.pdf"),
+    }
+
+def save_json(path: str, obj: Any) -> None:
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, ensure_ascii=False)
+        json.dump(obj, f, ensure_ascii=False, indent=2)
 
-def load_json(path: str, default=None):
+def load_json(path: str) -> Any:
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except FileNotFoundError:
-        return default
-
-def append_provenance(doc_id: str, actor: str, action: str, details: dict):
-    os.makedirs(PROV_DIR, exist_ok=True)
-    path = os.path.join(PROV_DIR, f"{doc_id}.jsonl")
-    rec = {
-        "ts": datetime.datetime.utcnow().isoformat() + "Z",
-        "doc_id": doc_id,
-        "actor": actor,
-        "action": action,
-        "details": details,
-    }
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    return rec
-
-def read_provenance(doc_id: str):
-    path = os.path.join(PROV_DIR, f"{doc_id}.jsonl")
-    rows = []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line: continue
-                rows.append(json.loads(line))
-    except FileNotFoundError:
-        pass
-    return rows
+    except Exception:
+        return None

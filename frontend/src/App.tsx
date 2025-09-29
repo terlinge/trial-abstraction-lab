@@ -1,241 +1,463 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import axios from 'axios'
-import { flatten } from './util'
+// App.tsx  (full file)
+import React, { useEffect, useMemo, useState } from "react";
+import "./app.css";
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+type Study = {
+  title?: string | null;
+  authors?: string[]; // array of strings
+  nct_id?: string | null;
+  pmid?: string | null;
+  doi?: string | null;
+  year?: number | null;
+  design?: string | null;
+  country?: string | null;
+  condition?: string | null;
+  notes?: string | null;
+};
 
-type Conflict = { key: string; A: any; B: any; type: 'numeric'|'text' }
+type Arm = { arm_id: string; label: string; n_randomized?: number | null };
+type Outcome = {
+  name: string;
+  type: string;
+  timepoints: { label: string; measures: any[] }[];
+  subgroups: any[];
+};
 
+type Draft = { study: Study; arms: Arm[]; outcomes: Outcome[] };
+
+type ReviewField = {
+  accepted?: boolean;
+  value?: any;
+  evidence?: string;
+};
+
+type ReviewerReview = {
+  study?: Partial<Record<keyof Study, ReviewField>>;
+  arms?: Record<string, ReviewField>; // by arm_id
+};
+
+type ServerDoc = {
+  doc_id: string;
+  filename?: string;
+  draft?: Draft;
+  reviewA?: ReviewerReview | null;
+  reviewB?: ReviewerReview | null;
+  final?: Draft | null;
+};
+
+const API = (import.meta as any).env?.VITE_API || "http://127.0.0.1:8001";
+
+// ---------- small helpers ----------
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const copy = async (text: string) => {
+  await navigator.clipboard.writeText(text);
+};
+
+function Toast({ msg }: { msg: string }) {
+  if (!msg) return null;
+  return <div className="toast">{msg}</div>;
+}
+
+function Section({ title, children }: React.PropsWithChildren<{ title: string }>) {
+  return (
+    <div className="card">
+      <h2>{title}</h2>
+      <div style={{ height: 8 }} />
+      {children}
+    </div>
+  );
+}
+
+// Build a review object that accepts *all* draft values, used by the “Accept All” button
+function buildAcceptAll(draft?: Draft): ReviewerReview {
+  const r: ReviewerReview = { study: {}, arms: {} };
+  if (draft?.study) {
+    (Object.keys(draft.study) as (keyof Study)[]).forEach((k) => {
+      (r.study as any)[k] = { accepted: true, value: (draft.study as any)[k] };
+    });
+  }
+  if (draft?.arms) {
+    draft.arms.forEach((a) => {
+      r.arms![a.arm_id] = { accepted: true, value: a };
+    });
+  }
+  return r;
+}
+
+function getAcceptedStudyValues(draft: Draft | undefined, review: ReviewerReview | undefined) {
+  const out: Partial<Study> = {};
+  if (!draft || !review?.study) return out;
+  for (const k of Object.keys(review.study) as (keyof Study)[]) {
+    const rf = review.study[k];
+    if (rf?.accepted) {
+      out[k] = rf.value ?? (draft.study as any)[k];
+    }
+  }
+  return out;
+}
+
+function diffStudy(a?: ReviewerReview, b?: ReviewerReview) {
+  const conflicts: string[] = [];
+  const keys = new Set<string>([
+    ...(a?.study ? Object.keys(a.study) : []),
+    ...(b?.study ? Object.keys(b.study) : []),
+  ]);
+  keys.forEach((k) => {
+    const av = a?.study?.[k as keyof Study]?.value;
+    const bv = b?.study?.[k as keyof Study]?.value;
+    const aa = a?.study?.[k as keyof Study]?.accepted;
+    const bb = b?.study?.[k as keyof Study]?.accepted;
+    if ((aa || bb) && JSON.stringify(av) !== JSON.stringify(bv)) {
+      conflicts.push(k);
+    }
+  });
+  return conflicts;
+}
+
+// ---------- Reviewer Panel -------------
+function ReviewerPanel({
+  name,
+  draft,
+  initial,
+  onSave,
+}: {
+  name: "A" | "B";
+  draft?: Draft;
+  initial?: ReviewerReview | null;
+  onSave: (r: ReviewerReview) => Promise<void>;
+}) {
+  const [review, setReview] = useState<ReviewerReview>(initial || { study: {}, arms: {} });
+  const [toast, setToast] = useState("");
+
+  useEffect(() => {
+    if (initial) setReview(initial);
+  }, [initial]);
+
+  function setStudyField(k: keyof Study, upd: Partial<ReviewField>) {
+    setReview((prev) => ({
+      ...prev,
+      study: {
+        ...(prev.study || {}),
+        [k]: { ...(prev.study?.[k] || {}), ...upd },
+      },
+    }));
+  }
+
+  function setArm(arm_id: string, upd: Partial<ReviewField>) {
+    setReview((prev) => ({
+      ...prev,
+      arms: {
+        ...(prev.arms || {}),
+        [arm_id]: { ...(prev.arms?.[arm_id] || {}), ...upd },
+      },
+    }));
+  }
+
+  const acceptAll = () => {
+    setReview(buildAcceptAll(draft));
+    setToast(`Reviewer ${name}: accepted all from draft`);
+  };
+
+  const save = async () => {
+    await onSave(review);
+    setToast(`Reviewer ${name}: saved`);
+    await sleep(1500);
+    setToast("");
+  };
+
+  const studyKeys: (keyof Study)[] = [
+    "title",
+    "authors",
+    "doi",
+    "year",
+    "design",
+    "condition",
+    "country",
+    "nct_id",
+    "pmid",
+    "notes",
+  ];
+
+  return (
+    <Section title={`Reviewer ${name}`}>
+      <div className="row">
+        <button className="btn" onClick={acceptAll}>Accept All from Draft</button>
+        <button className="btn secondary" onClick={() => copy(JSON.stringify(review, null, 2))}>
+          Copy Accepted ({name})
+        </button>
+        <button className="btn ghost" onClick={save}>Save Review</button>
+      </div>
+
+      {!draft && <div className="badge">Upload and generate a draft first.</div>}
+
+      {draft && (
+        <>
+          <div className="divider" />
+          <h3>Study</h3>
+          <div className="kv">
+            {studyKeys.map((k) => {
+              const draftVal = (draft.study as any)[k];
+              const rf = review.study?.[k] || {};
+              const valStr =
+                Array.isArray(draftVal) ? draftVal.join("; ") : draftVal == null ? "" : String(draftVal);
+              return (
+                <React.Fragment key={String(k)}>
+                  <div className="label">{k}</div>
+                  <div>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={!!rf.accepted}
+                        onChange={(e) => setStudyField(k, { accepted: e.target.checked, value: draftVal })}
+                        title="Accept this field from draft"
+                      />
+                      <input
+                        className="text"
+                        placeholder="Evidence pointer (page/figure/etc.)"
+                        value={rf.evidence || ""}
+                        onChange={(e) => setStudyField(k, { evidence: e.target.value })}
+                      />
+                    </div>
+                    <div style={{ fontFamily: "ui-monospace, monospace", fontSize: ".9rem", marginTop: 4 }}>
+                      {valStr || <span className="label">(empty)</span>}
+                    </div>
+                  </div>
+                </React.Fragment>
+              );
+            })}
+          </div>
+
+          <div className="divider" />
+          <h3>Arms</h3>
+          {draft.arms?.length ? (
+            draft.arms.map((a) => {
+              const rf = review.arms?.[a.arm_id] || {};
+              return (
+                <div key={a.arm_id} className="row" style={{ alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={!!rf.accepted}
+                    onChange={(e) => setArm(a.arm_id, { accepted: e.target.checked, value: a })}
+                  />
+                  <div className="badge">{a.arm_id}</div>
+                  <div>{a.label}</div>
+                  <input
+                    className="text"
+                    placeholder="Evidence pointer"
+                    value={rf.evidence || ""}
+                    onChange={(e) => setArm(a.arm_id, { evidence: e.target.value })}
+                  />
+                </div>
+              );
+            })
+          ) : (
+            <div className="label">(no arms)</div>
+          )}
+        </>
+      )}
+
+      <Toast msg={toast} />
+    </Section>
+  );
+}
+
+// --------------------- Main App --------------------------
 export default function App() {
-  const [docId, setDocId] = useState<string>('')
-  const [docState, setDocState] = useState<any>(null)
-  const [draftFlat, setDraftFlat] = useState<Record<string,any>>({})
-  const [reviewA, setReviewA] = useState<Record<string,any>>({})
-  const [reviewB, setReviewB] = useState<Record<string,any>>({})
-  const [verifyA, setVerifyA] = useState<Record<string,boolean>>({})
-  const [verifyB, setVerifyB] = useState<Record<string,boolean>>({})
-  const [evidenceA, setEvidenceA] = useState<Record<string,string>>({})
-  const [evidenceB, setEvidenceB] = useState<Record<string,string>>({})
-  const [conflicts, setConflicts] = useState<Conflict[]>([])
-  const [resolution, setResolution] = useState<Record<string,any>>({})
+  const [file, setFile] = useState<File | null>(null);
+  const [docId, setDocId] = useState<string>("");
+  const [serverDoc, setServerDoc] = useState<ServerDoc | null>(null);
+  const [toast, setToast] = useState("");
+
+  const grobidOn = useMemo(() => {
+    const note = serverDoc?.draft?.study?.notes || "";
+    return /GROBID=on/i.test(note);
+  }, [serverDoc]);
+
+  async function upload() {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch(`${API}/api/upload`, { method: "POST", body: fd });
+    const j = await r.json();
+    setDocId(j.doc_id);
+    setServerDoc(j);
+    setToast("Uploaded PDF");
+    await sleep(1200);
+    setToast("");
+  }
 
   async function refresh() {
-    if (!docId) return
-    const r = await axios.get(`${API}/api/doc/${docId}`)
-    setDocState(r.data)
-    if (r.data.draft) setDraftFlat(flatten(r.data.draft))
-    if (r.data.reviewA) setReviewA(r.data.reviewA.data || {})
-    if (r.data.reviewB) setReviewB(r.data.reviewB.data || {})
+    if (!docId) return;
+    const r = await fetch(`${API}/api/doc/${docId}`);
+    const j = await r.json();
+    setServerDoc(j);
   }
 
-  useEffect(() => { if (docId) refresh() }, [docId])
-
-  function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const form = new FormData()
-    form.append('file', file)
-    axios.post(`${API}/api/upload`, form).then(r => {
-      setDocId(r.data.doc_id)
-    })
+  async function genDraft() {
+    if (!docId) {
+      setToast("Upload a PDF first"); await sleep(1200); setToast(""); return;
+    }
+    const r = await fetch(`${API}/api/extract/${docId}`, { method: "POST" });
+    const j = await r.json();
+    setServerDoc(j);
+    setToast("Draft generated");
+    await sleep(1200);
+    setToast("");
   }
 
-  function startExtract() {
-    if (!docId) return
-    axios.post(`${API}/api/extract/${docId}`).then(() => refresh())
+  // Save review to backend if available; otherwise keep client-side only
+  async function saveReview(which: "A" | "B", review: ReviewerReview) {
+    if (!docId) return;
+    try {
+      const r = await fetch(`${API}/api/review/${docId}/${which}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(review),
+      });
+      if (r.ok) {
+        await refresh();
+        return;
+      }
+    } catch (_) {
+      /* backend route might not exist; fall back below */
+    }
+    // Fallback: save into our local serverDoc state so you can still merge/copy
+    setServerDoc((prev) => ({
+      ...(prev || ({} as any)),
+      doc_id: docId,
+      reviewA: which === "A" ? review : prev?.reviewA || null,
+      reviewB: which === "B" ? review : prev?.reviewB || null,
+    }) as ServerDoc);
   }
 
-  async function submitReview(who: 'A'|'B', data: Record<string,any>, verified: Record<string,boolean>, evidence: Record<string,string>) {
-    if (!docId) return
-    const form = new FormData()
-    form.append('reviewer', who)
-    form.append('data', JSON.stringify(data))
-    form.append('verified', JSON.stringify(verified))
-    form.append('evidence', JSON.stringify(evidence))
-    await axios.post(`${API}/api/review/${docId}`, form)
-    await refresh()
+  function computeConflicts(): string[] {
+    return diffStudy(serverDoc?.reviewA || undefined, serverDoc?.reviewB || undefined);
   }
 
-  async function loadConflicts() {
-    if (!docId) return
-    const r = await axios.get(`${API}/api/conflicts/${docId}`)
-    setConflicts(r.data.conflicts || [])
+  function mergeFinal(): Draft | null {
+    const draft = serverDoc?.draft;
+    if (!draft) return null;
+
+    const a = serverDoc?.reviewA;
+    const b = serverDoc?.reviewB;
+
+    // start from draft then overlay A then B for accepted fields
+    const mergedStudy: Study = { ...(draft.study || {}) };
+
+    const put = (rev?: ReviewerReview) => {
+      if (!rev?.study) return;
+      for (const k of Object.keys(rev.study) as (keyof Study)[]) {
+        const rf = rev.study[k];
+        if (rf?.accepted) {
+          (mergedStudy as any)[k] = rf.value ?? (draft.study as any)[k];
+        }
+      }
+    };
+
+    put(a);
+    put(b); // B wins ties by default; change order if you prefer A to win
+
+    const mergedArms: Arm[] = [];
+    const acceptedArmIds = new Set<string>([
+      ...(a?.arms ? Object.keys(a.arms).filter((id) => a.arms?.[id]?.accepted) : []),
+      ...(b?.arms ? Object.keys(b.arms).filter((id) => b.arms?.[id]?.accepted) : []),
+    ]);
+    draft.arms.forEach((arm) => {
+      if (acceptedArmIds.has(arm.arm_id)) mergedArms.push(arm);
+    });
+
+    return { study: mergedStudy, arms: mergedArms, outcomes: draft.outcomes || [] };
   }
 
-  async function finalize() {
-    if (!docId) return
-    const form = new FormData()
-    form.append('adjudicator', 'ReviewerC')
-    form.append('resolution', JSON.stringify(resolution))
-    form.append('notes', 'Resolved via UI selection')
-    await axios.post(`${API}/api/adjudicate/${docId}`, form)
-    await refresh()
-  }
-
-  async function getProvenance() {
-    if (!docId) return
-    const r = await axios.get(`${API}/api/provenance/${docId}`)
-    alert(JSON.stringify(r.data, null, 2))
-  }
-
-  async function exportContrasts() {
-    if (!docId) return
-    const r = await axios.get(`${API}/api/export/contrasts/${docId}`, { responseType: 'text' })
-    const blob = new Blob([r.data], { type: 'text/csv' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `contrasts_${docId}.csv`
-    a.click()
-  }
-
-  const fields = useMemo(() => Object.keys(draftFlat), [draftFlat])
+  const conflicts = computeConflicts();
+  const finalCandidate = mergeFinal();
 
   return (
     <div className="container">
       <h1>Trial Abstraction Prototype</h1>
-      <p className="muted">Upload a PDF, generate a mock AI draft, two reviewers validate with per-field checkboxes and evidence pointers, adjudicate, then export contrasts.</p>
 
-      <div className="card">
-        <h3>1) Upload PDF</h3>
-        <input type="file" accept="application/pdf" onChange={onFileChange} />
-        {docId && <div>Doc ID: <code>{docId}</code></div>}
-      </div>
-
-      <div className="card">
-        <h3>2) Draft Extraction</h3>
+      <Section title="1) Upload PDF">
         <div className="row">
-          <button className="btn" onClick={startExtract} disabled={!docId}>Generate Draft (Mock)</button>
-          <button className="btn secondary" onClick={refresh} disabled={!docId}>Refresh</button>
-          <button className="btn secondary" onClick={getProvenance} disabled={!docId}>View Provenance</button>
+          <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+          <button className="btn" onClick={upload}>Upload</button>
         </div>
-        {docState?.draft && (
-          <div style={{marginTop:12}}>
-            <span className="badge">Draft available</span>
-            <pre className="small">{JSON.stringify(docState.draft, null, 2)}</pre>
+        {serverDoc?.filename && (
+          <div style={{ marginTop: 8 }}>
+            <span className="badge">Doc ID: {serverDoc.doc_id}</span>&nbsp; | &nbsp;
+            <span className="label">File:</span> {serverDoc.filename}
           </div>
         )}
-      </div>
+      </Section>
 
-      <div className="card">
-        <h3>3) Reviewer A</h3>
-        <FormEditor
-          disabled={!docState?.draft}
-          baseline={draftFlat}
-          value={reviewA}
-          verified={verifyA}
-          evidence={evidenceA}
-          onChange={setReviewA}
-          onToggleVerified={(k, v) => setVerifyA(prev => ({...prev, [k]: v}))}
-          onChangeEvidence={(k, v) => setEvidenceA(prev => ({...prev, [k]: v}))}
-          onSave={() => submitReview('A', reviewA, verifyA, evidenceA)}
-        />
-      </div>
-
-      <div className="card">
-        <h3>4) Reviewer B</h3>
-        <FormEditor
-          disabled={!docState?.draft}
-          baseline={draftFlat}
-          value={reviewB}
-          verified={verifyB}
-          evidence={evidenceB}
-          onChange={setReviewB}
-          onToggleVerified={(k, v) => setVerifyB(prev => ({...prev, [k]: v}))}
-          onChangeEvidence={(k, v) => setEvidenceB(prev => ({...prev, [k]: v}))}
-          onSave={() => submitReview('B', reviewB, verifyB, evidenceB)}
-        />
-      </div>
-
-      <div className="card">
-        <h3>5) Conflicts</h3>
+      <Section title="2) Draft Extraction">
         <div className="row">
-          <button className="btn" onClick={loadConflicts} disabled={!docId}>Load Conflicts</button>
+          <button className="btn" onClick={genDraft}>Generate Draft</button>
+          <button className="btn secondary" onClick={refresh}>Refresh</button>
+          <button
+            className="btn ghost"
+            onClick={() => serverDoc?.draft && copy(JSON.stringify(serverDoc.draft, null, 2))}
+          >
+            Copy Draft JSON
+          </button>
         </div>
-        {conflicts.length > 0 ? (
-          <div style={{marginTop:12}}>
-            {conflicts.map(c => (
-              <div key={c.key} className="conflict" style={{marginBottom:8}}>
-                <div><strong>{c.key}</strong></div>
-                <div className="row" style={{marginTop:6}}>
-                  <button className="btn secondary" onClick={() => setResolution(prev => ({...prev, [c.key]: c.A}))}>Choose A</button>
-                  <button className="btn secondary" onClick={() => setResolution(prev => ({...prev, [c.key]: c.B}))}>Choose B</button>
-                </div>
-                <div style={{marginTop:8}}>
-                  <table className="table">
-                    <thead><tr><th>Reviewer</th><th>Value</th></tr></thead>
-                    <tbody>
-                      <tr><td>A</td><td>{String(c.A)}</td></tr>
-                      <tr><td>B</td><td>{String(c.B)}</td></tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : <p className="muted">No conflicts loaded yet.</p>}
-      </div>
 
-      <div className="card">
-        <h3>6) Adjudication & Export</h3>
-        <div className="row">
-          <button className="btn" onClick={finalize} disabled={!docId || conflicts.length===0}>Finalize</button>
-          <button className="btn secondary" onClick={exportContrasts} disabled={!docState?.final}>Export Contrasts (CSV)</button>
-        </div>
-        {docState?.final && (
-          <div style={{marginTop:12}}>
-            <span className="badge">Finalized</span>
-            <pre className="small">{JSON.stringify(docState.final, null, 2)}</pre>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function FormEditor({
-  baseline, value, verified, evidence, onChange, onToggleVerified, onChangeEvidence, onSave, disabled
-}: {
-  baseline: Record<string,any>,
-  value: Record<string,any>,
-  verified: Record<string,boolean>,
-  evidence: Record<string,string>,
-  onChange: (v: Record<string,any>) => void,
-  onToggleVerified: (k: string, v: boolean) => void,
-  onChangeEvidence: (k: string, v: string) => void,
-  onSave: () => void,
-  disabled?: boolean
-}) {
-  const fields = Object.keys(baseline || {})
-  if (disabled) return <p className="muted">Upload and generate a draft first.</p>
-  return (
-    <div>
-      <div className="row" style={{marginBottom:12}}>
-        <button className="btn" onClick={() => onSave()}>Save Review</button>
-      </div>
-      <div className="grid">
-        {fields.map(k => (
-          <div key={k}>
-            <label style={{fontSize:12}}>{k}</label>
-            <input
-              type="text"
-              value={value[k] ?? baseline[k] ?? ''}
-              onChange={e => onChange({...value, [k]: e.target.value})}
-            />
-            <div className="row" style={{alignItems:'center', marginTop:6}}>
-              <label className="cb">
-                <input type="checkbox" checked={!!verified[k]} onChange={e => onToggleVerified(k, e.target.checked)} />
-                Verified
-              </label>
-              <input
-                type="text"
-                placeholder="Evidence pointer (e.g., p7 Table 2)"
-                value={evidence[k] ?? ''}
-                onChange={e => onChangeEvidence(k, e.target.value)}
-              />
+        {serverDoc?.draft ? (
+          <>
+            <div style={{ marginTop: 8 }}>
+              <span className="badge">{grobidOn ? "GROBID: ON" : "GROBID: OFF (fallback parser)"}</span>
             </div>
+            <div className="code" style={{ marginTop: 10 }}>
+              <pre>{JSON.stringify(serverDoc.draft, null, 2)}</pre>
+            </div>
+          </>
+        ) : (
+          <div className="label">No draft yet.</div>
+        )}
+      </Section>
+
+      <ReviewerPanel
+        name="A"
+        draft={serverDoc?.draft || undefined}
+        initial={serverDoc?.reviewA || undefined}
+        onSave={(r) => saveReview("A", r)}
+      />
+
+      <ReviewerPanel
+        name="B"
+        draft={serverDoc?.draft || undefined}
+        initial={serverDoc?.reviewB || undefined}
+        onSave={(r) => saveReview("B", r)}
+      />
+
+      <Section title="5) Conflicts & Merge">
+        <div className="row">
+          <button className="btn secondary" onClick={() => copy(JSON.stringify(conflicts, null, 2))}>
+            Copy Conflicts
+          </button>
+          <button
+            className="btn"
+            onClick={() => finalCandidate && copy(JSON.stringify(finalCandidate, null, 2))}
+          >
+            Copy Final JSON
+          </button>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <div><strong>Conflicts (study fields):</strong> {conflicts.length ? conflicts.join(", ") : "none"}</div>
+        </div>
+
+        {finalCandidate ? (
+          <div className="code" style={{ marginTop: 10 }}>
+            <pre>{JSON.stringify(finalCandidate, null, 2)}</pre>
           </div>
-        ))}
-      </div>
+        ) : (
+          <div className="label">Generate a draft and save Reviewer A/B to build a final.</div>
+        )}
+
+        <div style={{ marginTop: 10 }} className="label">API base: {API}</div>
+      </Section>
+
+      <Toast msg={toast} />
     </div>
-  )
+  );
 }
