@@ -1,4 +1,4 @@
-# main.py  — full file (adds /api/health + draft flags so UI can show status)
+# main.py  — full file (forces OPENAI_API_KEY override; adds flags; health)
 
 from __future__ import annotations
 
@@ -135,16 +135,32 @@ def extract(doc_id: str):
     if not doc:
         return {"error": "not found", "doc_id": doc_id}
 
+    # --- FORCE the runtime env to use .env values (overrides any stale machine/user var) ---
+    if settings.OPENAI_API_KEY:
+        os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY  # hard override
+    os.environ["USE_LLM"] = "true" if settings.USE_LLM else "false"
+    if settings.OPENAI_MODEL:
+        os.environ["OPENAI_MODEL"] = settings.OPENAI_MODEL
+    # tiny debug so you can see which one is in play, safely masked:
+    masked = (os.environ.get("OPENAI_API_KEY") or "")[:8]
+    print(f"[llm] env OPENAI_API_KEY now starts with: {masked}...")
+
     p = _paths(doc_id)
     # Run the extractor (which may use GROBID and/or LLM depending on config)
     draft = extract_first_pass(p["pdf"], grobid_url=settings.GROBID_URL)
 
-    # Derive obvious flags for the UI
-    notes = (draft or {}).get("study", {}).get("notes", "") or ""
-    grobid_on = ("GROBID=on" in notes.lower()) or ("grobid tei" in notes.lower())
-    llm_used = ("LLM=enriched" in notes) or ("llm=true" in notes.lower())
+    # Prefer flags from extractor; fallback to notes only if missing
+    flags_in = (draft or {}).get("_flags") or {}
+    notes_lower = ((draft or {}).get("study", {}).get("notes", "") or "").lower()
 
-    # Attach flags for the UI to read without parsing text
+    grobid_on = flags_in.get("grobid")
+    llm_used = flags_in.get("llm")
+
+    if grobid_on is None:
+        grobid_on = ("grobid=on" in notes_lower) or ("grobid tei" in notes_lower)
+    if llm_used is None:
+        llm_used = ("grobid + llm" in notes_lower) or ("llm=true" in notes_lower) or ("llm" in notes_lower)
+
     draft["_flags"] = {
         "grobid": bool(grobid_on),
         "llm": bool(llm_used),

@@ -1,4 +1,4 @@
-# extractors.py  (FULL FILE)
+# extractors.py  (CLEAN, FIXED)
 from __future__ import annotations
 
 import os
@@ -7,8 +7,11 @@ import json
 from typing import Any, Dict, List, Optional
 
 import fitz  # PyMuPDF
-
 from grobid_client import GrobidClient
+
+
+def _llm_log(msg: str) -> None:
+    print(f"[llm] {msg}")
 
 
 # ---------------- PDF helpers ----------------
@@ -72,7 +75,6 @@ def _year_from_pdf(pdf_text: str) -> Optional[int]:
         return None
 
     head = pdf_text[:1500]
-    # Prefer lines with volume/issue/month patterns
     masthead_years = re.findall(
         r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(?:18|19|20)\d{2}\b"
         r"|(?:Vol\.?|Volume|No\.?|Issue|pp\.?)\s*.*?\b(?:18|19|20)\d{2}\b",
@@ -86,7 +88,7 @@ def _year_from_pdf(pdf_text: str) -> Optional[int]:
             if 1900 <= y <= 2035:
                 return y
 
-    # Otherwise, grab any 4-digit years in first 2 pages
+    # Otherwise, grab any 4-digit years in first ~2 pages
     first_pages = pdf_text[:6000]
     counts: Dict[int, int] = {}
     for m in re.finditer(r"\b((?:18|19|20)\d{2})\b", first_pages):
@@ -97,7 +99,6 @@ def _year_from_pdf(pdf_text: str) -> Optional[int]:
     if not counts:
         return None
 
-    # Return the most frequent; tie-breaker favors the earlier year in ties
     best = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
     if 1900 <= best <= 2035:
         return best
@@ -138,14 +139,15 @@ def _has_llm() -> bool:
 
 def _call_openai_chat(model: str, messages: List[Dict[str, str]], temperature: float = 0.0) -> Optional[str]:
     """
-    Works with either the new 'openai' SDK (OpenAI client) or the legacy 'openai' module.
-    Returns the assistant message content as a string, or None on failure.
+    Try the modern 'openai' SDK first, then legacy 'openai' module.
+    Return assistant message content, or None on failure.
     """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
+        _llm_log("no OPENAI_API_KEY in environment")
         return None
 
-    # Try the modern client first
+    # Modern SDK
     try:
         from openai import OpenAI  # type: ignore
         client = OpenAI(api_key=api_key)
@@ -156,10 +158,10 @@ def _call_openai_chat(model: str, messages: List[Dict[str, str]], temperature: f
             response_format={"type": "json_object"},
         )
         return resp.choices[0].message.content
-    except Exception:
-        pass
+    except Exception as e:
+        _llm_log(f"modern SDK path failed: {e!r}")
 
-    # Fallback to legacy
+    # Legacy SDK
     try:
         import openai  # type: ignore
         openai.api_key = api_key
@@ -169,7 +171,8 @@ def _call_openai_chat(model: str, messages: List[Dict[str, str]], temperature: f
             temperature=temperature,
         )
         return resp["choices"][0]["message"]["content"]
-    except Exception:
+    except Exception as e:
+        _llm_log(f"legacy SDK path failed: {e!r}")
         return None
 
 
@@ -178,16 +181,21 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
     Ask the LLM to produce a JSON block with improved fields.
     We feed it current (possibly partial) values + snippets of PDF/GROBID text.
     """
+    if not _has_llm():
+        _llm_log("disabled by flags or missing key (USE_LLM / key)")
+        return None
+    _llm_log(f"attempting enrichment with model={os.getenv('OPENAI_MODEL', 'gpt-4o-mini')}")
+
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-    # Keep the prompt small enough: slice long texts
+    # Keep the prompt small enough
     snippet_pdf = (pdf_text or "")[:12000]
     snippet_tei = (tei_xml or "")[:12000] if tei_xml else ""
 
     system = (
         "You are an expert systematic-review abstractor. "
         "Return STRICT JSON ONLY (no commentary). "
-        "Fill missing fields if you are confident; leave null when unsure. "
+        "Fill missing fields if confident; leave null when unsure. "
         "Do not invent arms or years."
     )
     user = {
@@ -195,7 +203,7 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
         "current_draft": draft.get("study", {}),
         "arms_seen": [a.get("label") for a in draft.get("arms", [])],
         "need_fields": ["title", "authors", "doi", "year", "design", "country", "condition", "arms"],
-        "notes": "Prefer publication year from article masthead; do NOT use processing years. Arms should be concrete labels.",
+        "notes": "Prefer publication year from masthead; do NOT use processing years. Arms should be concrete labels.",
         "pdf_text_snippet": snippet_pdf,
         "tei_snippet": snippet_tei,
         "json_schema": {
@@ -206,10 +214,10 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
                 "year": "integer or null",
                 "design": "string or null",
                 "country": "string or null",
-                "condition": "string or null"
+                "condition": "string or null",
             },
-            "arms": [{"label": "string"}]
-        }
+            "arms": [{"label": "string"}],
+        },
     }
 
     messages = [
@@ -218,9 +226,10 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
     ]
     content = _call_openai_chat(model, messages, temperature=0.0)
     if not content:
+        _llm_log("no content returned from OpenAI (check internet/key/package)")
         return None
 
-    # Ensure we can parse JSON from the result
+    # Parse JSON
     try:
         data = json.loads(content)
     except Exception:
@@ -232,7 +241,7 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
         except Exception:
             return None
 
-    # Basic shape guard
+    # Shape guard
     if not isinstance(data, dict):
         return None
     if "study" not in data or "arms" not in data:
@@ -259,7 +268,6 @@ def _merge_enrichment(base_draft: Dict[str, Any], enriched: Dict[str, Any], pdf_
     def _update_year():
         val = e.get("year")
         if isinstance(val, int) and 1900 <= val <= 2035:
-            # extra sanity: year should appear (as 4-digit) somewhere in the PDF text; if not, keep existing
             if str(val) in (pdf_text or "") or s.get("year") is None:
                 s["year"] = val
 
@@ -271,7 +279,6 @@ def _merge_enrichment(base_draft: Dict[str, Any], enriched: Dict[str, Any], pdf_
 
     # Authors
     if isinstance(e.get("authors"), list) and e["authors"]:
-        # basic cleanup, dedupe
         seen = set()
         authors = []
         for a in e["authors"]:
@@ -298,7 +305,7 @@ def _merge_enrichment(base_draft: Dict[str, Any], enriched: Dict[str, Any], pdf_
             out["arms"].append({
                 "arm_id": re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_"),
                 "label": label.strip(),
-                "n_randomized": None
+                "n_randomized": None,
             })
             existing.add(norm)
 
@@ -353,7 +360,6 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None) -> Dict[
 
     # ---------- Title fallback ----------
     if not draft["study"]["title"]:
-        # fallback: pick a reasonably long line as a title candidate
         m_title = re.search(r"(?m)^[^\r\n]{20,160}$", pdf_text)
         draft["study"]["title"] = m_title.group(0).strip() if m_title else None
 
@@ -362,8 +368,6 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None) -> Dict[
     if draft["study"]["year"] is None and y_pdf:
         draft["study"]["year"] = y_pdf
     else:
-        # If GROBID year looks suspicious (e.g., doesn't appear anywhere in PDF text),
-        # replace it with the PDF-derived year.
         y_now = draft["study"]["year"]
         if y_now and (str(y_now) not in (pdf_text or "")) and y_pdf:
             draft["study"]["year"] = y_pdf
@@ -383,5 +387,10 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None) -> Dict[
         draft["study"]["notes"] = "Draft via GROBID TEI; GROBID=on"
     else:
         draft["study"]["notes"] = "Draft via local parsing. GROBID=off"
+
+    # Explicit flags for UI
+    draft.setdefault("_flags", {})
+    draft["_flags"]["grobid"] = bool(used_grobid)
+    draft["_flags"]["llm"] = bool(used_llm)
 
     return draft
