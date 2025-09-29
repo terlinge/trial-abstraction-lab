@@ -23,7 +23,8 @@ type Outcome = {
   subgroups: any[];
 };
 
-type Draft = { study: Study; arms: Arm[]; outcomes: Outcome[] };
+// ⬇️ minimal addition: allow optional _flags from backend
+type Draft = { study: Study; arms: Arm[]; outcomes: Outcome[]; _flags?: { grobid?: boolean; llm?: boolean } };
 
 type ReviewField = {
   accepted?: boolean;
@@ -43,6 +44,17 @@ type ServerDoc = {
   reviewA?: ReviewerReview | null;
   reviewB?: ReviewerReview | null;
   final?: Draft | null;
+};
+
+// ⬇️ minimal addition: health type for /api/health banner
+type Health = {
+  mock_mode: boolean;
+  grobid_url: string | null;
+  grobid_alive: boolean;
+  use_llm: boolean;
+  llm_configured: boolean;
+  openai_model: string | null;
+  api_port: number;
 };
 
 const API = (import.meta as any).env?.VITE_API || "http://127.0.0.1:8001";
@@ -268,10 +280,39 @@ export default function App() {
   const [serverDoc, setServerDoc] = useState<ServerDoc | null>(null);
   const [toast, setToast] = useState("");
 
+  // ⬇️ minimal addition: health banner state + poll /api/health
+  const [health, setHealth] = useState<Health | null>(null);
+  useEffect(() => {
+    let stop = false;
+    const tick = async () => {
+      try {
+        const r = await fetch(`${API}/api/health`);
+        if (!r.ok) throw new Error("health failed");
+        const h = (await r.json()) as Health;
+        if (!stop) setHealth(h);
+      } catch {
+        if (!stop) setHealth(null);
+      }
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => {
+      stop = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  // Your existing GROBID detection by notes
   const grobidOn = useMemo(() => {
     const note = serverDoc?.draft?.study?.notes || "";
     return /GROBID=on/i.test(note);
   }, [serverDoc]);
+
+  // ⬇️ minimal addition: prefer _flags when present; fall back to your notes check
+  const draftFlags = serverDoc?.draft?._flags || {};
+  const grobidLine =
+    draftFlags.grobid != null ? (draftFlags.grobid ? "GROBID: ON" : "GROBID: OFF") : (grobidOn ? "GROBID: ON" : "GROBID: OFF (fallback parser)");
+  const llmLine = draftFlags.llm ? "LLM: USED" : "LLM: NOT USED";
 
   async function upload() {
     if (!file) return;
@@ -374,6 +415,31 @@ export default function App() {
 
   return (
     <div className="container">
+      {/* ⬇️ minimal addition: status banner */}
+      <div
+        style={{
+          padding: "8px 12px",
+          borderRadius: 8,
+          background: "#0f172a",
+          color: "white",
+          marginBottom: 16,
+        }}
+      >
+        <strong>Backend:</strong>{" "}
+        {health ? (
+          <>
+            ✅ running (port {health.api_port}) &nbsp;|&nbsp; <strong>Mock</strong>:{" "}
+            {health.mock_mode ? "ON" : "OFF"} &nbsp;|&nbsp; <strong>GROBID</strong>:{" "}
+            {health.grobid_alive ? "🟢 alive" : "🔴 down"}{" "}
+            {health.grobid_url ? `(${health.grobid_url})` : ""}
+            &nbsp;|&nbsp; <strong>LLM</strong>:{" "}
+            {health.use_llm ? (health.llm_configured ? `🟢 ${health.openai_model}` : "⚠ on, no key") : "OFF"}
+          </>
+        ) : (
+          "⚠ cannot reach backend /api/health"
+        )}
+      </div>
+
       <h1>Trial Abstraction Prototype</h1>
 
       <Section title="1) Upload PDF">
@@ -403,9 +469,15 @@ export default function App() {
 
         {serverDoc?.draft ? (
           <>
+            {/* existing badge kept */}
             <div style={{ marginTop: 8 }}>
               <span className="badge">{grobidOn ? "GROBID: ON" : "GROBID: OFF (fallback parser)"}</span>
             </div>
+            {/* ⬇️ minimal addition: explicit draft status line */}
+            <div style={{ marginTop: 6, fontSize: 14 }}>
+              <strong>Draft Status:</strong> <code>{grobidLine}</code> &nbsp;|&nbsp; <code>{llmLine}</code>
+            </div>
+
             <div className="code" style={{ marginTop: 10 }}>
               <pre>{JSON.stringify(serverDoc.draft, null, 2)}</pre>
             </div>

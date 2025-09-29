@@ -1,4 +1,4 @@
-# main.py  (full file)
+# main.py  — full file (adds /api/health + draft flags so UI can show status)
 
 from __future__ import annotations
 
@@ -6,33 +6,44 @@ import os
 import uuid
 from typing import Dict, Any, Optional
 
+import requests
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from extractors import extract_first_pass
+
 
 # ---------------- Settings ----------------
 
 class Settings(BaseSettings):
+    # existing
     MOCK_MODE: bool = False
-    OPENAI_API_KEY: Optional[str] = None
     PORT: int = 8001
     GROBID_URL: Optional[str] = None
 
-    class Config:
-        env_file = ".env"
-        extra = "forbid"
+    # LLM-related (safe even if unused)
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_MODEL: str = "gpt-4o-mini"
+    USE_LLM: bool = False
+
+    # don’t crash on unknown keys in .env
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="",
+        extra="ignore",
+    )
 
 settings = Settings()
 
+
 # ---------------- App ----------------
 
-app = FastAPI()
+app = FastAPI(title="Trial Abstraction Backend")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # dev convenience
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -45,22 +56,55 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # in-memory store
 DB: Dict[str, Dict[str, Any]] = {}
 
+
 def _paths(doc_id: str) -> Dict[str, str]:
     return {
         "pdf": os.path.join(UPLOAD_DIR, f"{doc_id}.pdf"),
     }
 
+
 # --------------- Models for reviews -----------------
 
 class ReviewerPayload(BaseModel):
-    study: Optional[Dict[str, Dict[str, Any]]] = None
-    arms: Optional[Dict[str, Dict[str, Any]]] = None
+    study: Optional[Dict[str, Any]] = None
+    arms: Optional[Dict[str, Any]] = None
+
+
+# --------------- Health helpers ---------------------
+
+def _check_grobid_alive() -> bool:
+    if not settings.GROBID_URL:
+        return False
+    try:
+        url = settings.GROBID_URL.rstrip("/") + "/api/isalive"
+        r = requests.get(url, timeout=2)
+        return r.ok and (r.text.strip().lower() == "true")
+    except Exception:
+        return False
+
 
 # --------------- Startup log ------------------------
 
-print(f"[startup] MOCK_MODE={settings.MOCK_MODE}  GROBID_URL={settings.GROBID_URL}")
+print(f"[startup] MOCK_MODE={settings.MOCK_MODE}  GROBID_URL={settings.GROBID_URL}  USE_LLM={settings.USE_LLM}")
+
 
 # --------------- Routes -----------------------------
+
+@app.get("/api/health")
+def health():
+    """Frontend polls this to show a clear status banner."""
+    grobid_alive = _check_grobid_alive()
+    llm_configured = bool(settings.OPENAI_API_KEY)
+    return {
+        "mock_mode": settings.MOCK_MODE,
+        "grobid_url": settings.GROBID_URL,
+        "grobid_alive": grobid_alive,
+        "use_llm": settings.USE_LLM,
+        "llm_configured": llm_configured,
+        "openai_model": settings.OPENAI_MODEL if llm_configured else None,
+        "api_port": settings.PORT,
+    }
+
 
 @app.post("/api/upload")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -92,7 +136,20 @@ def extract(doc_id: str):
         return {"error": "not found", "doc_id": doc_id}
 
     p = _paths(doc_id)
+    # Run the extractor (which may use GROBID and/or LLM depending on config)
     draft = extract_first_pass(p["pdf"], grobid_url=settings.GROBID_URL)
+
+    # Derive obvious flags for the UI
+    notes = (draft or {}).get("study", {}).get("notes", "") or ""
+    grobid_on = ("GROBID=on" in notes.lower()) or ("grobid tei" in notes.lower())
+    llm_used = ("LLM=enriched" in notes) or ("llm=true" in notes.lower())
+
+    # Attach flags for the UI to read without parsing text
+    draft["_flags"] = {
+        "grobid": bool(grobid_on),
+        "llm": bool(llm_used),
+    }
+
     doc["draft"] = draft
     return doc
 

@@ -26,3 +26,7 @@ frontend/dist/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local env files
+backend/.env
+frontend/.env
