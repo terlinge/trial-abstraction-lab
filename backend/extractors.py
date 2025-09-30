@@ -1,4 +1,4 @@
-# extractors.py  (CLEAN, FIXED)
+# extractors.py  (FULL FILE)
 from __future__ import annotations
 
 import os
@@ -10,6 +10,7 @@ import fitz  # PyMuPDF
 from grobid_client import GrobidClient
 
 
+# ---------------- small logs ----------------
 def _llm_log(msg: str) -> None:
     print(f"[llm] {msg}")
 
@@ -75,6 +76,7 @@ def _year_from_pdf(pdf_text: str) -> Optional[int]:
         return None
 
     head = pdf_text[:1500]
+    # Prefer lines with volume/issue/month patterns
     masthead_years = re.findall(
         r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(?:18|19|20)\d{2}\b"
         r"|(?:Vol\.?|Volume|No\.?|Issue|pp\.?)\s*.*?\b(?:18|19|20)\d{2}\b",
@@ -88,7 +90,7 @@ def _year_from_pdf(pdf_text: str) -> Optional[int]:
             if 1900 <= y <= 2035:
                 return y
 
-    # Otherwise, grab any 4-digit years in first ~2 pages
+    # Otherwise, grab any 4-digit years in first 2 pages
     first_pages = pdf_text[:6000]
     counts: Dict[int, int] = {}
     for m in re.finditer(r"\b((?:18|19|20)\d{2})\b", first_pages):
@@ -99,6 +101,7 @@ def _year_from_pdf(pdf_text: str) -> Optional[int]:
     if not counts:
         return None
 
+    # Return the most frequent; tie-breaker favors the earlier year in ties
     best = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
     if 1900 <= best <= 2035:
         return best
@@ -139,15 +142,15 @@ def _has_llm() -> bool:
 
 def _call_openai_chat(model: str, messages: List[Dict[str, str]], temperature: float = 0.0) -> Optional[str]:
     """
-    Try the modern 'openai' SDK first, then legacy 'openai' module.
-    Return assistant message content, or None on failure.
+    Works with either the new 'openai' SDK (OpenAI client) or the legacy 'openai' module.
+    Returns the assistant message content as a string, or None on failure.
     """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         _llm_log("no OPENAI_API_KEY in environment")
         return None
 
-    # Modern SDK
+    # Try the modern client first
     try:
         from openai import OpenAI  # type: ignore
         client = OpenAI(api_key=api_key)
@@ -161,7 +164,7 @@ def _call_openai_chat(model: str, messages: List[Dict[str, str]], temperature: f
     except Exception as e:
         _llm_log(f"modern SDK path failed: {e!r}")
 
-    # Legacy SDK
+    # Fallback to legacy
     try:
         import openai  # type: ignore
         openai.api_key = api_key
@@ -178,32 +181,39 @@ def _call_openai_chat(model: str, messages: List[Dict[str, str]], temperature: f
 
 def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) -> Optional[Dict[str, Any]]:
     """
-    Ask the LLM to produce a JSON block with improved fields.
-    We feed it current (possibly partial) values + snippets of PDF/GROBID text.
+    Ask the LLM to produce a JSON block with improved fields, including per-arm n_randomized
+    and a small set of outcomes. STRICT JSON only.
     """
     if not _has_llm():
         _llm_log("disabled by flags or missing key (USE_LLM / key)")
         return None
-    _llm_log(f"attempting enrichment with model={os.getenv('OPENAI_MODEL', 'gpt-4o-mini')}")
 
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    _llm_log(f"attempting enrichment with model={model}")
 
-    # Keep the prompt small enough
+    # Keep prompt small-ish
     snippet_pdf = (pdf_text or "")[:12000]
     snippet_tei = (tei_xml or "")[:12000] if tei_xml else ""
 
+    # Provide current arms so the model can map n per arm reliably
+    current_arms = [{"arm_id": a.get("arm_id"), "label": a.get("label")} for a in draft.get("arms", [])]
+
     system = (
         "You are an expert systematic-review abstractor. "
-        "Return STRICT JSON ONLY (no commentary). "
-        "Fill missing fields if confident; leave null when unsure. "
-        "Do not invent arms or years."
+        "Return STRICT JSON ONLY (no extra text). "
+        "If confident, fill missing fields; otherwise set null. "
+        "Prefer publication year from article masthead. "
+        "For arms, only report sample sizes if explicitly stated per arm; do not guess."
     )
+
     user = {
         "task": "Enrich trial metadata from text.",
-        "current_draft": draft.get("study", {}),
-        "arms_seen": [a.get("label") for a in draft.get("arms", [])],
-        "need_fields": ["title", "authors", "doi", "year", "design", "country", "condition", "arms"],
-        "notes": "Prefer publication year from masthead; do NOT use processing years. Arms should be concrete labels.",
+        "current_draft_study": draft.get("study", {}),
+        "current_arms": current_arms,
+        "need_fields": [
+            "title", "authors", "doi", "year", "design", "country", "condition",
+            "arms (with per-arm n if reported)", "primary/secondary outcomes"
+        ],
         "pdf_text_snippet": snippet_pdf,
         "tei_snippet": snippet_tei,
         "json_schema": {
@@ -214,10 +224,28 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
                 "year": "integer or null",
                 "design": "string or null",
                 "country": "string or null",
-                "condition": "string or null",
+                "condition": "string or null"
             },
-            "arms": [{"label": "string"}],
+            "arms": [
+                {
+                    "label": "string",               # exact arm label as appears in paper if possible
+                    "n_randomized": "integer|null"  # per-arm randomized count; null if not found
+                }
+            ],
+            "outcomes": [
+                {
+                    "name": "string",                          # e.g., 'Morning stiffness', 'DAS28 change'
+                    "type": "continuous|binary|time-to-event|other",
+                    "timepoints": [{"label": "string"}]        # e.g., 'end of treatment', '12 weeks'
+                }
+            ]
         },
+        "instructions": [
+            "Only include arms that are actually in the study.",
+            "If you see total N but not per-arm N, leave n_randomized as null.",
+            "If outcomes are named/described, include them; otherwise return an empty list.",
+            "Do not invent values."
+        ]
     }
 
     messages = [
@@ -229,7 +257,7 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
         _llm_log("no content returned from OpenAI (check internet/key/package)")
         return None
 
-    # Parse JSON
+    # Ensure we can parse JSON from the result
     try:
         data = json.loads(content)
     except Exception:
@@ -241,13 +269,15 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
         except Exception:
             return None
 
-    # Shape guard
+    # Basic shape guard
     if not isinstance(data, dict):
         return None
-    if "study" not in data or "arms" not in data:
-        return None
-    if not isinstance(data["arms"], list):
+    if "study" not in data:
+        data["study"] = {}
+    if "arms" not in data or not isinstance(data["arms"], list):
         data["arms"] = []
+    if "outcomes" not in data or not isinstance(data["outcomes"], list):
+        data["outcomes"] = []
 
     return data
 
@@ -268,6 +298,7 @@ def _merge_enrichment(base_draft: Dict[str, Any], enriched: Dict[str, Any], pdf_
     def _update_year():
         val = e.get("year")
         if isinstance(val, int) and 1900 <= val <= 2035:
+            # year should appear somewhere in text or we didn’t have one
             if str(val) in (pdf_text or "") or s.get("year") is None:
                 s["year"] = val
 
@@ -292,22 +323,62 @@ def _merge_enrichment(base_draft: Dict[str, Any], enriched: Dict[str, Any], pdf_
 
     _update_year()
 
-    # Arms: union+dedupe by normalized label
-    existing = {re.sub(r"[^a-z0-9]+", "", (a["label"] or "").lower()) for a in out.get("arms", [])}
+    # Arms: union+dedupe by normalized label; update n_randomized when present
+    def _norm(x: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", (x or "").lower())
+
+    existing_by_norm = {_norm(a.get("label", "")): a for a in out.get("arms", [])}
+
     for arm in enriched.get("arms", []):
         if not isinstance(arm, dict):
             continue
         label = arm.get("label")
         if not isinstance(label, str) or not label.strip():
             continue
-        norm = re.sub(r"[^a-z0-9]+", "", label.lower())
-        if norm and norm not in existing:
-            out["arms"].append({
+        nr = arm.get("n_randomized")
+        norm = _norm(label)
+        if norm in existing_by_norm:
+            # update n_randomized if present and valid
+            if isinstance(nr, int) and nr >= 0:
+                existing_by_norm[norm]["n_randomized"] = nr
+        else:
+            # new arm
+            new_arm = {
                 "arm_id": re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_"),
                 "label": label.strip(),
-                "n_randomized": None,
-            })
-            existing.add(norm)
+                "n_randomized": nr if isinstance(nr, int) and nr >= 0 else None,
+            }
+            out.setdefault("arms", []).append(new_arm)
+            existing_by_norm[norm] = new_arm
+
+    # Outcomes: if LLM returned any, replace the single stub
+    llm_outcomes = []
+    for o in enriched.get("outcomes", []):
+        if not isinstance(o, dict):
+            continue
+        name = o.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        typ = o.get("type")
+        if not isinstance(typ, str) or not typ.strip():
+            typ = "other"
+        # Normalize timepoints -> ensure measures: []
+        tps = o.get("timepoints") if isinstance(o.get("timepoints"), list) else []
+        norm_tps = []
+        for tp in tps:
+            if isinstance(tp, dict) and isinstance(tp.get("label"), str) and tp["label"].strip():
+                norm_tps.append({"label": tp["label"].strip(), "measures": []})
+        if not norm_tps:
+            norm_tps = [{"label": "end of treatment", "measures": []}]
+        llm_outcomes.append({
+            "name": name.strip(),
+            "type": typ.strip(),
+            "timepoints": norm_tps,
+            "subgroups": [],
+        })
+
+    if llm_outcomes:
+        out["outcomes"] = llm_outcomes
 
     return out
 
@@ -360,6 +431,7 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None) -> Dict[
 
     # ---------- Title fallback ----------
     if not draft["study"]["title"]:
+        # fallback: pick a reasonably long line as a title candidate
         m_title = re.search(r"(?m)^[^\r\n]{20,160}$", pdf_text)
         draft["study"]["title"] = m_title.group(0).strip() if m_title else None
 
@@ -368,6 +440,7 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None) -> Dict[
     if draft["study"]["year"] is None and y_pdf:
         draft["study"]["year"] = y_pdf
     else:
+        # If GROBID year looks suspicious, replace it with the PDF-derived year.
         y_now = draft["study"]["year"]
         if y_now and (str(y_now) not in (pdf_text or "")) and y_pdf:
             draft["study"]["year"] = y_pdf
@@ -388,7 +461,7 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None) -> Dict[
     else:
         draft["study"]["notes"] = "Draft via local parsing. GROBID=off"
 
-    # Explicit flags for UI
+    # explicit flags for UI
     draft.setdefault("_flags", {})
     draft["_flags"]["grobid"] = bool(used_grobid)
     draft["_flags"]["llm"] = bool(used_llm)
