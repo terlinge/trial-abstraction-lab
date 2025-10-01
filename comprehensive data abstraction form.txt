@@ -1,0 +1,773 @@
+# COMPREHENSIVE CLINICAL TRIAL DATA ABSTRACTION FORM
+## For Systematic Reviews, Meta-Analyses, and Network Meta-Analyses
+
+---
+
+## WORKSHEET 1: STUDY IDENTIFICATION & SCREENING
+
+### Study Identification
+- **Study_ID** (Primary Key - Unique identifier)
+- **Review_ID** (Links to your review/project)
+- **First_Author_Last_Name**
+- **Publication_Year**
+- **Study_Short_Name** (e.g., "PARADIGM-HF 2014")
+- **Full_Citation** (AMA or Vancouver format)
+- **PMID** (PubMed ID)
+- **DOI**
+- **Clinical_Trial_Registry_ID** (e.g., NCT number)
+- **Secondary_Registry_IDs** (EudraCT, ISRCTN, etc.)
+
+### Source Documentation
+- **Publication_Type** (Primary publication | Secondary analysis | Abstract only | Trial registry | Unpublished | Other)
+- **Data_Source** (Published paper | Trial registry | FDA documents | EMA documents | Manufacturer data | Author correspondence | Other)
+- **Multiple_Publications** (Yes/No - are there multiple reports from same trial?)
+- **Linked_Publication_IDs** (List other Study_IDs from same trial)
+- **Date_Data_Extracted**
+- **Extractor_Initials**
+- **Second_Extractor_Initials** (for dual extraction)
+- **Conflicts_Resolved_By**
+
+### Screening & Eligibility
+- **Screened_Title_Abstract** (Yes/No)
+- **Screened_Full_Text** (Yes/No/Not needed)
+- **Inclusion_Decision** (Include | Exclude | Pending)
+- **Exclusion_Reason** (Wrong population | Wrong intervention | Wrong comparator | Wrong outcome | Wrong study design | Duplicate | Other)
+- **Exclusion_Reason_Details**
+
+---
+
+## WORKSHEET 2: STUDY DESIGN & METHODS
+
+### Study Design Classification
+- **Study_Design_Primary** (RCT | Quasi-experimental | Cohort | Case-control | Cross-sectional | Case series | Other)
+- **Study_Design_Specific** (Parallel group | Crossover | Cluster randomized | Factorial | Adaptive | Non-inferiority | Equivalence | Superiority | Pragmatic | Other)
+- **Randomization_Method** (Computer-generated | Random number table | Coin toss | Not described | Non-randomized | N/A)
+- **Allocation_Concealment** (Central allocation | Sealed envelopes | Pharmacy-controlled | Not described | No concealment | N/A)
+- **Blinding_Participants** (Yes | No | Unclear | N/A)
+- **Blinding_Personnel** (Yes | No | Unclear | N/A)
+- **Blinding_Outcome_Assessors** (Yes | No | Unclear | N/A)
+- **Blinding_Description** (Single-blind | Double-blind | Triple-blind | Open-label | Unclear)
+
+### Trial Characteristics
+- **Trial_Phase** (Phase I | Phase I/II | Phase II | Phase II/III | Phase III | Phase IV | Not applicable)
+- **Multicenter** (Yes | No | Unclear)
+- **Number_of_Centers**
+- **Countries** (List all)
+- **Number_of_Countries**
+- **Geographic_Region** (North America | Europe | Asia | Latin America | Africa | Middle East | Oceania | Multi-regional)
+- **Trial_Setting** (Inpatient | Outpatient | Primary care | Secondary care | Tertiary care | Community | Mixed | Other)
+
+### Timeline
+- **Recruitment_Start_Date**
+- **Recruitment_End_Date**
+- **Study_Start_Date**
+- **Study_Completion_Date**
+- **Primary_Completion_Date**
+- **Follow_Up_Duration_Planned** (value and units)
+- **Maximum_Follow_Up_Duration** (value and units)
+- **Median_Follow_Up_Duration** (value and units)
+- **Follow_Up_Completion_Rate** (%)
+
+### Sample Size & Power
+- **Target_Sample_Size**
+- **Actual_Sample_Size_Enrolled**
+- **Sample_Size_Analyzed_Primary**
+- **Power_Calculation_Reported** (Yes | No)
+- **Target_Power** (%)
+- **Assumed_Effect_Size**
+- **Alpha_Level**
+- **Non_Inferiority_Margin** (if applicable)
+
+---
+
+## WORKSHEET 3: PARTICIPANT CHARACTERISTICS
+
+### Eligibility Criteria
+- **Population_Description**
+- **Key_Inclusion_Criteria** (free text, detailed)
+- **Key_Exclusion_Criteria** (free text, detailed)
+- **Disease_Condition** (specific diagnosis)
+- **Disease_Severity** (Mild | Moderate | Severe | Mixed | Not specified)
+- **Disease_Stage** (Early | Advanced | Metastatic | Recurrent | Other)
+- **Disease_Duration_Criteria** (inclusion criteria regarding disease duration)
+
+### Demographics (Baseline - Total Population)
+- **Total_N_Randomized**
+- **Total_N_Analyzed**
+- **Mean_Age** (years)
+- **SD_Age**
+- **Median_Age**
+- **Age_Range_Min**
+- **Age_Range_Max**
+- **Age_Group** (Pediatric <18 | Adults 18-64 | Elderly ≥65 | Mixed)
+- **Percent_Male**
+- **Percent_Female**
+- **Race_Ethnicity_Description** (free text)
+- **Percent_White**
+- **Percent_Black**
+- **Percent_Asian**
+- **Percent_Hispanic**
+- **Percent_Other_Race**
+
+### Clinical Characteristics (Baseline - Total Population)
+- **Mean_Weight_kg**
+- **SD_Weight**
+- **Mean_BMI**
+- **SD_BMI**
+- **Mean_Disease_Duration_Years**
+- **SD_Disease_Duration**
+- **Disease_Severity_Distribution** (% in each severity category)
+- **Comorbidities_Description** (free text)
+- **Percent_Diabetes**
+- **Percent_Hypertension**
+- **Percent_Cardiovascular_Disease**
+- **Percent_Renal_Disease**
+- **Percent_Prior_Treatment**
+- **Prior_Treatment_Description**
+- **Concomitant_Medications_Description**
+
+### Additional Baseline Characteristics
+- **Key_Prognostic_Factor_1_Name**
+- **Key_Prognostic_Factor_1_Value**
+- **Key_Prognostic_Factor_2_Name**
+- **Key_Prognostic_Factor_2_Value**
+- **Key_Prognostic_Factor_3_Name**
+- **Key_Prognostic_Factor_3_Value**
+- **Baseline_Balance_Adequate** (Yes | No | Unclear - are groups balanced?)
+- **Baseline_Imbalance_Description**
+
+---
+
+## WORKSHEET 4: INTERVENTIONS & COMPARATORS
+
+### Instructions: Create one row per treatment arm
+*Use separate rows for each arm; include Arm_Number to distinguish*
+
+### Arm Identification
+- **Study_ID** (Foreign key)
+- **Arm_Number** (1, 2, 3, etc.)
+- **Arm_Label** (Brief name: e.g., "Drug A High Dose")
+- **Arm_Type** (Experimental | Active comparator | Placebo | No treatment | Standard care | Dose comparison)
+
+### Intervention Details
+- **Intervention_Category** (Drug | Biologic | Device | Surgery | Radiation | Behavioral | Dietary | Exercise | Combination | Other)
+- **Generic_Name** (for drugs)
+- **Brand_Name**
+- **Drug_Class** (e.g., ACE inhibitor, SSRI)
+- **Route_of_Administration** (Oral | IV | SC | IM | Topical | Inhalation | Other)
+- **Formulation** (Tablet | Capsule | Solution | Suspension | Other)
+
+### Dosing & Administration
+- **Dose_Amount**
+- **Dose_Unit** (mg | g | IU | Other)
+- **Dose_Frequency** (Once daily | BID | TID | QID | PRN | Other)
+- **Total_Daily_Dose**
+- **Dose_Escalation** (Yes | No)
+- **Dose_Escalation_Schedule**
+- **Dose_Modification_Allowed** (Yes | No)
+- **Dose_Modification_Criteria**
+- **Treatment_Duration_Planned**
+- **Treatment_Duration_Actual_Mean**
+- **Treatment_Duration_Unit** (Days | Weeks | Months | Years)
+
+### Administration Details
+- **Administration_Instructions** (With food | Fasting | Specific timing)
+- **Co_Interventions_Allowed** (Yes | No)
+- **Co_Interventions_Description**
+- **Background_Therapy_Required**
+- **Background_Therapy_Description**
+
+### Enrollment & Adherence
+- **N_Allocated_to_Arm**
+- **N_Received_Intervention**
+- **N_Did_Not_Receive_Reason**
+- **Adherence_Rate** (%)
+- **Adherence_Measurement_Method**
+- **N_Discontinued_Treatment**
+- **Discontinuation_Reason_AE** (N and %)
+- **Discontinuation_Reason_Lack_Efficacy** (N and %)
+- **Discontinuation_Reason_Withdrawal** (N and %)
+- **Discontinuation_Reason_Lost_Followup** (N and %)
+- **Discontinuation_Reason_Death** (N and %)
+- **Discontinuation_Reason_Other** (N and %)
+
+---
+
+## WORKSHEET 5: OUTCOMES DEFINITIONS
+
+### Instructions: Create one row per outcome
+*This defines WHAT was measured; results go in separate worksheet*
+
+### Outcome Identification
+- **Study_ID** (Foreign key)
+- **Outcome_Number** (1, 2, 3, etc.)
+- **Outcome_Name** (Short descriptor)
+- **Outcome_Type** (Primary | Secondary | Exploratory | Safety | Post-hoc)
+- **Outcome_Priority** (If multiple primary outcomes, specify co-primary or hierarchical)
+
+### Outcome Measurement Details
+- **Outcome_Domain** (Efficacy | Safety | Quality of life | Functional status | Biomarker | Patient-reported | Clinical event | Mortality | Hospitalization | Other)
+- **Outcome_Definition** (Detailed description of how measured)
+- **Measurement_Scale** (Continuous | Dichotomous | Ordinal | Count | Time-to-event | Other)
+- **Data_Type** (Mean/SD | Median/IQR | N/% | Hazard ratio | Count/person-time | Change from baseline | Final value | Other)
+
+### Measurement Instrument
+- **Measurement_Tool** (Name of scale, instrument, lab test, etc.)
+- **Tool_Validated** (Yes | No | Unclear)
+- **Measurement_Range_Min**
+- **Measurement_Range_Max**
+- **Direction_Better** (Higher better | Lower better | N/A)
+- **MCID** (Minimal clinically important difference, if known)
+- **Measurement_Unit**
+
+### Timing & Assessment
+- **Assessment_Timepoints** (List all: baseline, week 4, week 12, etc.)
+- **Primary_Timepoint** (Which timepoint was specified as primary?)
+- **Assessor** (Physician | Patient | Laboratory | Independent committee | Other)
+- **Blinding_of_Assessor** (Yes | No | Unclear)
+
+### Event-Specific (for dichotomous outcomes)
+- **Event_Definition** (Precise definition of what constitutes an event)
+- **Adjudication** (Yes | No - was there an adjudication committee?)
+- **Adjudication_Blinded** (Yes | No | Unclear)
+
+### Composite Outcomes
+- **Composite_Outcome** (Yes | No)
+- **Composite_Components** (List all components)
+- **Hierarchical_Composite** (Yes | No)
+
+---
+
+## WORKSHEET 6: RESULTS - CONTINUOUS OUTCOMES
+
+### Instructions: One row per outcome per timepoint per comparison
+*For continuous data (means, medians)*
+
+### Identification
+- **Study_ID** (Foreign key)
+- **Outcome_Number** (Links to Worksheet 5)
+- **Arm_Number** (Links to Worksheet 4)
+- **Timepoint** (Baseline | Week 4 | Month 6 | End of treatment | etc.)
+- **Time_from_Baseline** (numeric value)
+- **Time_Unit** (Days | Weeks | Months | Years)
+
+### Sample Size
+- **N_Analyzed**
+- **N_Missing**
+- **Missing_Data_Reason**
+- **ITT_Analysis** (Yes | No | Modified ITT)
+- **Analysis_Population** (ITT | Per protocol | As treated | Safety | Other)
+
+### Continuous Data - Mean/SD
+- **Mean**
+- **SD**
+- **SE** (standard error, if SD not available)
+- **95CI_Lower**
+- **95CI_Upper**
+
+### Continuous Data - Median/Range
+- **Median**
+- **IQR_25th**
+- **IQR_75th**
+- **Range_Min**
+- **Range_Max**
+
+### Change from Baseline (if reported separately)
+- **Mean_Change_from_Baseline**
+- **SD_Change**
+- **SE_Change**
+- **95CI_Change_Lower**
+- **95CI_Change_Upper**
+
+### Comparison Statistics (if reported)
+- **Comparison_Arm** (Which arm was this compared to?)
+- **Mean_Difference**
+- **95CI_Difference_Lower**
+- **95CI_Difference_Upper**
+- **P_Value**
+- **Statistical_Test** (t-test | ANOVA | Mann-Whitney | Other)
+- **Adjusted_Analysis** (Yes | No)
+- **Adjustment_Variables** (List covariates)
+
+---
+
+## WORKSHEET 7: RESULTS - DICHOTOMOUS OUTCOMES
+
+### Instructions: One row per outcome per timepoint per arm
+*For binary/categorical outcomes (events, proportions)*
+
+### Identification
+- **Study_ID** (Foreign key)
+- **Outcome_Number** (Links to Worksheet 5)
+- **Arm_Number** (Links to Worksheet 4)
+- **Timepoint**
+- **Time_from_Baseline**
+- **Time_Unit**
+
+### Sample Size & Events
+- **N_Analyzed**
+- **N_Events**
+- **N_Non_Events**
+- **Percent_Events**
+- **95CI_Percent_Lower**
+- **95CI_Percent_Upper**
+
+### Comparison Statistics (if reported)
+- **Comparison_Arm**
+- **Risk_Ratio**
+- **RR_95CI_Lower**
+- **RR_95CI_Upper**
+- **Odds_Ratio**
+- **OR_95CI_Lower**
+- **OR_95CI_Upper**
+- **Risk_Difference**
+- **RD_95CI_Lower**
+- **RD_95CI_Upper**
+- **P_Value**
+- **Statistical_Test** (Chi-square | Fisher exact | Logistic regression | Other)
+- **Adjusted_Analysis** (Yes | No)
+- **Adjustment_Variables**
+
+### Additional Metrics
+- **NNT** (Number needed to treat)
+- **NNT_95CI_Lower**
+- **NNT_95CI_Upper**
+- **NNH** (Number needed to harm, for safety outcomes)
+
+---
+
+## WORKSHEET 8: RESULTS - TIME-TO-EVENT OUTCOMES
+
+### Instructions: One row per outcome per arm
+*For survival analysis, time-to-event data*
+
+### Identification
+- **Study_ID** (Foreign key)
+- **Outcome_Number** (Links to Worksheet 5)
+- **Arm_Number** (Links to Worksheet 4)
+
+### Sample Size & Events
+- **N_Analyzed**
+- **N_Events**
+- **N_Censored**
+- **Total_Person_Time**
+- **Person_Time_Unit** (Person-years | Person-months | etc.)
+
+### Survival Estimates
+- **Median_Survival_Time**
+- **Median_Survival_Unit**
+- **Median_95CI_Lower**
+- **Median_95CI_Upper**
+- **Mean_Survival_Time** (if reported)
+
+### Event Rates at Specific Timepoints
+- **Timepoint_1** (e.g., 1 year)
+- **Event_Free_Rate_Timepoint_1** (%)
+- **95CI_EFR_T1_Lower**
+- **95CI_EFR_T1_Upper**
+- **Timepoint_2**
+- **Event_Free_Rate_Timepoint_2** (%)
+- **95CI_EFR_T2_Lower**
+- **95CI_EFR_T2_Upper**
+
+### Hazard Ratio (vs comparator)
+- **Comparison_Arm**
+- **Hazard_Ratio**
+- **HR_95CI_Lower**
+- **HR_95CI_Upper**
+- **P_Value**
+- **Log_Rank_P_Value**
+- **Statistical_Method** (Cox regression | Kaplan-Meier | Other)
+- **Proportional_Hazards_Assumption_Met** (Yes | No | Not tested)
+- **Adjusted_Analysis** (Yes | No)
+- **Adjustment_Variables**
+
+---
+
+## WORKSHEET 9: ADVERSE EVENTS & SAFETY
+
+### Overall Safety Summary
+- **Study_ID** (Foreign key)
+- **Arm_Number** (Links to Worksheet 4)
+- **Safety_Population_N**
+- **Total_Person_Years_Exposure**
+
+### Any Adverse Events
+- **N_Any_AE**
+- **Percent_Any_AE**
+- **N_Serious_AE**
+- **Percent_Serious_AE**
+- **N_Discontinued_Due_to_AE**
+- **Percent_Discontinued_Due_to_AE**
+- **N_Deaths**
+- **Percent_Deaths**
+- **Deaths_Related_to_Treatment** (N)
+
+### Specific Adverse Events (create multiple rows for each AE)
+- **AE_Preferred_Term** (use MedDRA if available)
+- **AE_System_Organ_Class**
+- **AE_Severity** (Mild | Moderate | Severe | Grade 1-5)
+- **AE_Seriousness** (Serious | Non-serious)
+- **AE_Number_Events**
+- **AE_Number_Patients**
+- **AE_Percent_Patients**
+- **AE_Relatedness** (Definitely related | Probably related | Possibly related | Unlikely related | Not related)
+- **AE_Leading_to_Discontinuation** (N)
+- **AE_Leading_to_Death** (N)
+
+### Laboratory Abnormalities
+- **Lab_Parameter** (e.g., ALT, Creatinine)
+- **Lab_Abnormality_Definition** (e.g., >3x ULN)
+- **N_Patients_Abnormality**
+- **Percent_Patients_Abnormality**
+
+---
+
+## WORKSHEET 10: SUBGROUP ANALYSES
+
+### Instructions: One row per subgroup per outcome
+*Capture all pre-specified and post-hoc subgroup analyses*
+
+### Identification
+- **Study_ID** (Foreign key)
+- **Outcome_Number** (Links to Worksheet 5)
+- **Subgroup_Analysis_Number**
+
+### Subgroup Definition
+- **Subgroup_Variable** (Age | Sex | Race | Disease severity | Biomarker status | etc.)
+- **Subgroup_Prespecified** (Yes | No - was this analysis planned a priori?)
+- **Subgroup_Categories** (List all categories compared)
+
+### Subgroup Results (for first category)
+- **Subgroup_Category_1_Name** (e.g., "Age <65")
+- **Subgroup_1_N**
+- **Subgroup_1_Effect_Estimate** (could be OR, RR, MD, HR depending on outcome)
+- **Subgroup_1_95CI_Lower**
+- **Subgroup_1_95CI_Upper**
+
+### Subgroup Results (for second category)
+- **Subgroup_Category_2_Name** (e.g., "Age ≥65")
+- **Subgroup_2_N**
+- **Subgroup_2_Effect_Estimate**
+- **Subgroup_2_95CI_Lower**
+- **Subgroup_2_95CI_Upper**
+
+### Interaction Test
+- **Interaction_P_Value**
+- **Interaction_Test_Method**
+- **Interaction_Significant** (Yes | No - typically p<0.10)
+- **Author_Interpretation_Subgroup_Effect**
+
+### Additional Categories (if >2 subgroups)
+- **Subgroup_Category_3_Name**
+- **Subgroup_3_N**
+- **Subgroup_3_Effect_Estimate**
+- **Subgroup_3_95CI_Lower**
+- **Subgroup_3_95CI_Upper**
+
+---
+
+## WORKSHEET 11: RISK OF BIAS ASSESSMENT
+
+### Instructions: One row per study
+*Following Cochrane Risk of Bias 2.0 (RoB 2) tool*
+
+### Study Identification
+- **Study_ID** (Foreign key)
+- **RoB_Tool_Used** (RoB 2.0 | RoB 1.0 | Newcastle-Ottawa | ROBINS-I | Other)
+- **RoB_Assessor_1**
+- **RoB_Assessor_2**
+- **Date_Assessed**
+
+### RoB 2.0 Domains
+
+#### Domain 1: Randomization Process
+- **D1_Allocation_Sequence_Adequate** (Y | PY | PN | N | NI)
+- **D1_Allocation_Concealment_Adequate** (Y | PY | PN | N | NI)
+- **D1_Baseline_Imbalances** (Y | PY | PN | N | NI)
+- **D1_Judgment** (Low | Some concerns | High)
+- **D1_Support_for_Judgment** (free text)
+
+#### Domain 2: Deviations from Intended Interventions
+- **D2_Participants_Aware** (Y | PY | PN | N | NI)
+- **D2_Carers_Aware** (Y | PY | PN | N | NI)
+- **D2_Deviations_from_Protocol** (Y | PY | PN | N | NI)
+- **D2_Deviations_Balanced** (Y | PY | PN | N | NI)
+- **D2_Appropriate_Analysis** (Y | PY | PN | N | NI)
+- **D2_Judgment** (Low | Some concerns | High)
+- **D2_Support_for_Judgment**
+
+#### Domain 3: Missing Outcome Data
+- **D3_Data_Available_All_Participants** (Y | PY | PN | N | NI)
+- **D3_Evidence_Result_Not_Biased** (Y | PY | PN | N | NI)
+- **D3_Missingness_Could_Affect_Result** (Y | PY | PN | N | NI)
+- **D3_Judgment** (Low | Some concerns | High)
+- **D3_Support_for_Judgment**
+
+#### Domain 4: Measurement of Outcome
+- **D4_Outcome_Assessment_Appropriate** (Y | PY | PN | N | NI)
+- **D4_Assessors_Blinded** (Y | PY | PN | N | NI)
+- **D4_Assessment_Influenced_by_Knowledge** (Y | PY | PN | N | NI)
+- **D4_Judgment** (Low | Some concerns | High)
+- **D4_Support_for_Judgment**
+
+#### Domain 5: Selection of Reported Result
+- **D5_Data_Analyzed_Per_Protocol** (Y | PY | PN | N | NI)
+- **D5_Multiple_Outcome_Measurements** (Y | PY | PN | N | NI)
+- **D5_Multiple_Analyses** (Y | PY | PN | N | NI)
+- **D5_Result_Selected_from_Multiple** (Y | PY | PN | N | NI)
+- **D5_Judgment** (Low | Some concerns | High)
+- **D5_Support_for_Judgment**
+
+### Overall Risk of Bias
+- **Overall_RoB_Judgment** (Low | Some concerns | High)
+- **Overall_RoB_Justification**
+
+### Additional Bias Concerns
+- **Other_Bias_Detected** (Yes | No)
+- **Other_Bias_Description**
+- **Selective_Outcome_Reporting_Suspected** (Yes | No | Unclear)
+
+---
+
+## WORKSHEET 12: FUNDING & CONFLICTS OF INTEREST
+
+### Study Identification
+- **Study_ID** (Foreign key)
+
+### Funding Sources
+- **Funding_Source_Primary** (Industry | Government | Foundation | University | Mixed | Unfunded | Not reported)
+- **Funding_Source_Details** (Specific sponsor name)
+- **Industry_Sponsorship** (Yes | No | Unclear)
+- **Manufacturer_Involved** (Yes | No | Unclear)
+- **Manufacturer_Role** (Design | Conduct | Analysis | Interpretation | Writing | All | None)
+
+### Author Conflicts
+- **COI_Statement_Present** (Yes | No)
+- **COI_Number_Authors_Declared**
+- **COI_Financial_Industry** (Any author: Yes | No | Not reported)
+- **COI_Employment_Industry** (Yes | No | Not reported)
+- **COI_Consultant_Industry** (Yes | No | Not reported)
+- **COI_Honoraria_Industry** (Yes | No | Not reported)
+- **COI_Stock_Ownership** (Yes | No | Not reported)
+- **COI_Research_Grants** (Yes | No | Not reported)
+- **COI_Specifics** (free text details)
+
+### Data Access & Analysis Independence
+- **Academic_Authors_Had_Data_Access** (Yes | No | Unclear)
+- **Independent_Statistical_Analysis** (Yes | No | Unclear)
+- **Sponsor_Control_Over_Publication** (Yes | No | Unclear)
+
+---
+
+## WORKSHEET 13: GRADE QUALITY ASSESSMENT
+
+### Instructions: One row per outcome per comparison
+*For rating certainty/quality of evidence per GRADE*
+
+### Identification
+- **Study_ID** (Foreign key)
+- **Outcome_Number** (Links to Worksheet 5)
+- **Comparison** (Which treatment vs which comparator)
+
+### Starting Level
+- **Study_Design_Category** (RCT | Observational)
+- **Starting_Quality** (High | Low - RCTs start high, observational starts low)
+
+### GRADE Domains - Downgrading Factors
+
+#### Risk of Bias
+- **Risk_of_Bias_Serious** (Not serious | Serious | Very serious)
+- **Risk_of_Bias_Reason**
+- **Risk_of_Bias_Downgrade** (0 | -1 | -2)
+
+#### Inconsistency
+- **Inconsistency_Serious** (Not serious | Serious | Very serious)
+- **Inconsistency_I2_Value** (%)
+- **Inconsistency_Reason**
+- **Inconsistency_Downgrade** (0 | -1 | -2)
+
+#### Indirectness
+- **Indirectness_Serious** (Not serious | Serious | Very serious)
+- **Indirectness_Reason** (PICO elements differ from question of interest)
+- **Indirectness_Downgrade** (0 | -1 | -2)
+
+#### Imprecision
+- **Imprecision_Serious** (Not serious | Serious | Very serious)
+- **Imprecision_Reason** (Wide CI | Crosses threshold | Small N)
+- **Imprecision_Downgrade** (0 | -1 | -2)
+
+#### Publication Bias
+- **Publication_Bias_Suspected** (Not suspected | Suspected | Strongly suspected)
+- **Publication_Bias_Reason** (Asymmetric funnel plot | Missing studies | Industry sponsorship)
+- **Publication_Bias_Downgrade** (0 | -1 | -2)
+
+### GRADE Domains - Upgrading Factors (for observational studies)
+
+#### Large Effect
+- **Large_Effect** (None | Large RR>2 or <0.5 | Very large RR>5 or <0.2)
+- **Large_Effect_Upgrade** (0 | +1 | +2)
+
+#### Dose-Response
+- **Dose_Response_Gradient** (None | Present)
+- **Dose_Response_Upgrade** (0 | +1)
+
+#### Confounding
+- **All_Plausible_Confounding** (Would reduce effect | Would increase effect | Not applicable)
+- **Confounding_Upgrade** (0 | +1)
+
+### Final GRADE Rating
+- **Total_Downgrade_Points**
+- **Total_Upgrade_Points**
+- **Final_Quality_Rating** (High | Moderate | Low | Very low)
+- **Quality_Justification** (free text summary)
+
+---
+
+## WORKSHEET 14: NETWORK META-ANALYSIS SPECIFIC
+
+### Instructions: Use when conducting network meta-analysis
+*One row per study - captures geometry & connectivity*
+
+### Network Characteristics
+- **Study_ID** (Foreign key)
+- **Number_of_Arms_in_Study**
+- **Arms_in_Network** (List which arms contribute to network)
+- **Direct_Comparisons_Provided** (List all pairwise comparisons, e.g., "A vs B, A vs C")
+- **Multi_Arm_Study** (Yes | No - more than 2 arms?)
+
+### Network Connectivity
+- **Contributes_to_Loop** (Yes | No - is study part of closed loop?)
+- **Loop_Description** (Which loop: e.g., "A-B-C-A")
+- **Common_Comparator** (Which treatment is common comparator?)
+
+### Transitivity Assessment
+- **Patient_Population_Comparable** (Yes | No | Unclear)
+- **Disease_Severity_Comparable** (Yes | No | Unclear)
+- **Concomitant_Treatments_Comparable** (Yes | No | Unclear)
+- **Study_Era_Comparable** (Yes | No | Unclear)
+- **Effect_Modifiers_Present** (List potential effect modifiers)
+- **Transitivity_Concern** (Low | Moderate | High)
+- **Transitivity_Justification**
+
+### Consistency Assessment (if direct and indirect evidence available)
+- **Direct_Evidence_Available** (Yes | No)
+- **Indirect_Evidence_Available** (Yes | No)
+- **Node_Splitting_Performed** (Yes | No | N/A)
+- **Node_Splitting_P_Value**
+- **Consistency_Concern** (No inconsistency | Inconsistency suspected | Inconsistency confirmed)
+
+---
+
+## WORKSHEET 15: ADDITIONAL DATA & NOTES
+
+### Economic Data (if reported)
+- **Study_ID** (Foreign key)
+- **Cost_Analysis_Included** (Yes | No)
+- **Healthcare_Costs_Reported** (Yes | No)
+- **Cost_Currency**
+- **Cost_Year**
+- **Cost_Per_Patient_Treatment_Arm_1**
+- **Cost_Per_Patient_Treatment_Arm_2**
+- **QALY_Reported** (Yes | No)
+- **ICER_Reported** (Yes | No)
+- **ICER_Value**
+
+### Patient-Reported Outcomes
+- **PRO_Instruments_Used** (List all: SF-36, EQ-5D, etc.)
+- **Quality_of_Life_Data_Available** (Yes | No)
+- **Patient_Satisfaction_Reported** (Yes | No)
+- **Patient_Preference_Reported** (Yes | No)
+
+### Additional Analyses
+- **Sensitivity_Analyses_Performed** (Yes | No)
+- **Sensitivity_Analysis_Description**
+- **Per_Protocol_Analysis** (Yes | No)
+- **As_Treated_Analysis** (Yes | No)
+- **Completer_Analysis** (Yes | No)
+- **Imputation_Method** (None | LOCF | BOCF | Multiple imputation | Other)
+
+### Data Quality & Completeness
+- **Data_Extraction_Confidence** (High | Moderate | Low)
+- **Data_Extraction_Challenges** (free text)
+- **Missing_Data_Reported** (Completely | Partially | Not reported)
+- **Need_Author_Contact** (Yes | No)
+- **Author_Contact_Date**
+- **Author_Response_Received** (Yes | No | Pending)
+- **Additional_Data_Obtained** (Yes | No)
+
+### General Notes
+- **Important_Study_Limitations** (free text)
+- **Unique_Study_Features** (free text)
+- **Concerns_for_Meta_Analysis** (free text)
+- **Data_Suitable_for_Pooling** (Yes | No | Uncertain)
+- **Extractor_Comments** (free text)
+- **Review_Team_Discussion_Notes** (free text)
+
+---
+
+## DATA DICTIONARY NOTES
+
+### Field Coding Conventions:
+- **Y** = Yes
+- **N** = No  
+- **PY** = Probably yes
+- **PN** = Probably no
+- **NI** = No information
+- **N/A** = Not applicable
+- **Unclear** = Information not clearly reported
+
+### Date Format: 
+Use ISO 8601 (YYYY-MM-DD) or YYYY-MM or YYYY depending on precision available
+
+### Multiple Values:
+When a field can have multiple values (e.g., multiple countries, multiple comorbidities), use semicolon (;) to separate
+
+### Missing Data Codes:
+- **NR** = Not reported
+- **NA** = Not applicable
+- **ND** = Not done
+- **UC** = Unclear from report
+
+---
+
+## RECOMMENDED EXCEL STRUCTURE
+
+### Sheet Organization:
+1. Create separate worksheets for each section above
+2. Use first row for field names (headers)
+3. Use Data Validation dropdowns for categorical fields
+4. Consider freezing header row for easy scrolling
+5. Use conditional formatting to highlight missing critical data
+
+### Key Fields Across Worksheets:
+- **Study_ID** should be consistent across all worksheets (acts as foreign key)
+- Use **Arm_Number** and **Outcome_Number** to link related data
+- Consider color-coding worksheets by category (design=blue, results=green, quality=red)
+
+### Data Entry Tips:
+1. Extract to paper form first, then enter into Excel
+2. Dual extraction for critical fields
+3. Regular consensus meetings for discrepancies
+4. Version control for the database
+5. Regular backups
+6. Audit trail of changes
+
+---
+
+## QUALITY CHECKS
+
+### Before Analysis, Verify:
+- [ ] Study_ID is unique for each study
+- [ ] All studies have Risk of Bias assessment
+- [ ] Primary outcome clearly identified
+- [ ] Sample sizes reconcile across worksheets
+- [ ] Effect estimates have confidence intervals
+- [ ] Statistical tests are appropriate for data type
+- [ ] Units are consistently recorded
+- [ ] No duplicate data entry
+- [ ] All critical fields populated (mark what's "critical" for your review)
+
+---
+
+*This form follows PRISMA 2020, Cochrane Handbook standards, GRADE approach, and accommodates network meta-analysis requirements. Customize based on your specific therapeutic area and research question.*
