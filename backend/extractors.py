@@ -1,4 +1,4 @@
-# extractors.py  (DROP-IN REPLACEMENT)
+# extractors.py  (FULL FILE)
 from __future__ import annotations
 
 import os
@@ -16,7 +16,6 @@ def _llm_log(msg: str) -> None:
 
 
 # ---------------- PDF helpers ----------------
-
 def _read_pdf_text(pdf_path: str, max_pages: int = 6) -> str:
     """Read plain text from the first few pages via PyMuPDF."""
     out: List[str] = []
@@ -38,7 +37,6 @@ def _clean_doi(s: Optional[str]) -> Optional[str]:
 
 
 # ---------------- Heuristics ----------------
-
 def _heuristic_arms(*texts: str) -> List[Dict[str, Any]]:
     # Merge all text we have (TEI abstract + extracted PDF text)
     t = " ".join(texts).replace("\n", " ")
@@ -127,7 +125,6 @@ def _blank_draft() -> Dict[str, Any]:
             "notes": None,
         },
         "arms": [],
-        # keep old 'outcomes' for UI compatibility
         "outcomes": [
             {
                 "name": "Primary outcome (stub)",
@@ -136,18 +133,106 @@ def _blank_draft() -> Dict[str, Any]:
                 "subgroups": [],
             }
         ],
-        # NEW: normalized layer for DB-ready capture
-        "outcome_defs": [],  # [{outcome_id,name,type,domain,definition,measurement,unit,primary,timepoints:[]}]
+        # Slots for defs + numeric results
+        "outcome_defs": [],
         "results": {
-            "continuous": [],   # [{outcome_id,timepoint,group,n,mean,sd,se,median,iqr25,iqr75,unit,change:{mean,sd},comparison:{comparator,effect,value,ci:[l,u],p,unit}, evidence:{page_hint,quote}}]
-            "dichotomous": [],  # [{outcome_id,timepoint,group,n,events,proportion,ci:[l,u],comparison:{...}, evidence:{...}}]
-            "tte": []           # [{outcome_id,group,n,events,median_time,unit,hr,ci:[l,u],p,evidence:{...}}]
+            "continuous": [],
+            "dichotomous": [],
+            "tte": [],
         },
     }
 
 
-# ---------------- LLM enrichment (optional) ----------------
+# ---------------- Heuristic: per-arm n extraction ----------------
+def _tolerant_label_regex(label: str) -> str:
+    """Turn an arm label into a whitespace/hyphen tolerant regex."""
+    pat = re.escape(label)
+    pat = pat.replace(r"\ ", r"\s+")
+    pat = pat.replace(r"\-", r"[\-\u2011\u2013\u2014]?")
+    return pat
 
+
+def _dose_number_regex(val: Any) -> Optional[str]:
+    """Regex for a dose number allowing 7.5 -> 7[.,·]?5; 9 -> 9(?:\.\d+)?"""
+    if not isinstance(val, (int, float)):
+        return None
+    f = float(val)
+    if f.is_integer():
+        return rf"{int(f)}(?:\.\d+)?"
+    s = f"{f}"
+    if "." in s:
+        a, b = s.split(".", 1)
+        return rf"{re.escape(a)}[.,·]?{re.escape(b)}"
+    return re.escape(s)
+
+
+def _fill_arm_ns_from_text(arms: List[Dict[str, Any]], *texts: str) -> None:
+    """
+    For each arm with n_randomized=None, try to find a nearby '(n=35)' or similar
+    around the arm label or a drug+dose synonym in the provided texts.
+    Does NOT overwrite non-null values.
+    """
+    t = " ".join(texts).replace("\n", " ")
+    if not t or not arms:
+        return
+
+    for arm in arms:
+        if not isinstance(arm, dict):
+            continue
+        if arm.get("n_randomized") is not None:
+            continue
+
+        label = arm.get("label") or ""
+        label_pat = _tolerant_label_regex(label)
+        pats = [label_pat]
+
+        # Add a drug+dose synonym if available
+        drug = (arm.get("drug") or {}).get("name")
+        dose = arm.get("dose") or {}
+        dv, du = dose.get("value"), dose.get("unit")
+        if isinstance(drug, str) and drug.strip() and dv is not None and isinstance(du, str) and du.strip():
+            num_pat = _dose_number_regex(dv)
+            if num_pat:
+                dd_pat = rf"{re.escape(drug)}\s+{num_pat}\s*{re.escape(du)}(?:\s*/\s*day)?"
+                pats.append(dd_pat)
+
+        found = None
+        for base in pats:
+            # label ... (n=35)
+            rx1 = rf"{base}[^\.]{{0,80}}\(\s*[nN]\s*=\s*(\d{{1,4}})\s*\)"
+            m = re.search(rx1, t, flags=re.I)
+            if m:
+                found = int(m.group(1)); break
+
+            # label ... n=35
+            rx2 = rf"{base}[^\.]{{0,80}}[nN]\s*=\s*(\d{{1,4}})"
+            m = re.search(rx2, t, flags=re.I)
+            if m:
+                found = int(m.group(1)); break
+
+            # (n=35) ... label
+            rx3 = rf"[nN]\s*=\s*(\d{{1,4}})[^\.]{{0,80}}{base}"
+            m = re.search(rx3, t, flags=re.I)
+            if m:
+                found = int(m.group(1)); break
+
+            # label ... (35 patients)
+            rx4 = rf"{base}[^\.]{{0,80}}\(\s*(\d{{1,4}})\s*(?:patients?|subjects?)\s*\)"
+            m = re.search(rx4, t, flags=re.I)
+            if m:
+                found = int(m.group(1)); break
+
+            # label ... (35)  — sometimes trial descriptions do this
+            rx5 = rf"{base}\s*\(\s*(\d{{1,4}})\s*\)"
+            m = re.search(rx5, t, flags=re.I)
+            if m:
+                found = int(m.group(1)); break
+
+        if isinstance(found, int) and found >= 0:
+            arm["n_randomized"] = found
+
+
+# ---------------- LLM helpers ----------------
 def _has_llm() -> bool:
     return bool(os.getenv("OPENAI_API_KEY")) and os.getenv("USE_LLM", "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -191,12 +276,45 @@ def _call_openai_chat(model: str, messages: List[Dict[str, str]], temperature: f
         return None
 
 
+def _normalize_llm_results(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Fix common LLM quirks: percent changes placed as mean + unit, add 'post-ACTH' hint if needed."""
+    try:
+        results = data.get("results", {})
+        cont = results.get("continuous", []) if isinstance(results, dict) else []
+        if isinstance(cont, list):
+            for row in cont:
+                if not isinstance(row, dict):
+                    continue
+                ev = row.get("evidence", {}) if isinstance(row.get("evidence"), dict) else {}
+                quote = (ev.get("quote") or "").lower()
+
+                # If quote contains a '%' and row has change.mean in [-100, 100], treat it as percent change.
+                ch = row.get("change") if isinstance(row.get("change"), dict) else None
+                if ch and isinstance(ch.get("mean"), (int, float)) and -100 <= ch["mean"] <= 100:
+                    if "%" in quote or "percent" in quote:
+                        row["change_pct"] = abs(float(ch["mean"]))
+                        row["change"] = {"mean": None, "sd": None}
+                        if "unit" in row:
+                            row["unit"] = None
+
+                # Normalize timepoint strings if ACTH context is present in the quote
+                tp = row.get("timepoint")
+                if isinstance(tp, str) and ("acth" in quote) and ("acth" not in tp.lower()):
+                    row["timepoint"] = f"{tp} post-ACTH"
+
+            data.setdefault("results", {})["continuous"] = cont
+    except Exception:
+        # Don't let normalization kill the pipeline
+        pass
+    return data
+
+
 def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) -> Optional[Dict[str, Any]]:
     """
     Ask the LLM to produce a JSON block with improved fields, including:
       - per-arm n_randomized and structured dose info
-      - normalized outcome_defs
-      - structured results in continuous/dichotomous/tte buckets
+      - outcomes with atomic measures and optional comparisons
+      - outcome_defs + results (continuous/dichotomous/tte)
     STRICT JSON only.
     """
     if not _has_llm():
@@ -216,22 +334,19 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
         "Return STRICT JSON ONLY (no extra text). "
         "If confident, fill missing fields; otherwise set null. "
         "Prefer publication year from article masthead. "
-        "For arms, only report sample sizes and dose info if explicitly stated; do not guess. "
-        "Whenever you report a numeric result, include an evidence object with a brief quote and page hint if possible."
+        "For arms, only report sample sizes and dose info if explicitly stated; do not guess."
     )
 
-    # JSON schema the model should follow
     user = {
-        "task": "Enrich trial metadata and structure numeric results.",
+        "task": "Enrich trial metadata from text.",
         "current_draft_study": draft.get("study", {}),
         "current_arms": current_arms,
         "pdf_text_snippet": snippet_pdf,
         "tei_snippet": snippet_tei,
         "need_fields": [
-            "study core fields",
-            "per-arm n_randomized and dose structure",
-            "outcome definitions",
-            "results (continuous, dichotomous, time-to-event)"
+            "title", "authors", "doi", "year", "design", "country", "condition",
+            "arms (with per-arm n and dose structure if reported)",
+            "outcome_defs and results (continuous/dichotomous/tte)"
         ],
         "json_schema": {
             "study": {
@@ -250,23 +365,53 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
                     "drug": {"name": "string|null"},
                     "dose": {
                         "value": "number|null",
-                        "unit": "string|null",       # mg, mg/day, etc.
-                        "schedule": "string|null",   # qd, bid, daily, etc.
-                        "route": "string|null"       # oral, IV, etc.
+                        "unit": "string|null",
+                        "schedule": "string|null",
+                        "route": "string|null"
                     }
+                }
+            ],
+            "outcomes": [
+                {
+                    "name": "string",
+                    "type": "continuous|binary|time-to-event|other",
+                    "timepoints": [
+                        {
+                            "label": "string",
+                            "measures": [
+                                {
+                                    "group": "string",
+                                    "n": "integer|null",
+                                    "metric": "mean|sd|se|median|iqr|proportion|event_count|total|change_mean|change_sd",
+                                    "value": "number|null",
+                                    "unit": "string|null"
+                                }
+                            ]
+                        }
+                    ],
+                    "comparisons": [
+                        {
+                            "groups": ["string", "string"],
+                            "effect": "difference_in_means|ratio_of_means|risk_ratio|odds_ratio|hazard_ratio|md|smd|rd|other",
+                            "value": "number|null",
+                            "ci": "array[2 numbers]|null",
+                            "p": "number|null",
+                            "unit": "string|null"
+                        }
+                    ]
                 }
             ],
             "outcome_defs": [
                 {
-                    "outcome_id": "string",      # slug or short id, e.g., 'cortisol'
-                    "name": "string",            # short descriptor
+                    "outcome_id": "string",
+                    "name": "string",
                     "type": "continuous|dichotomous|time-to-event|other",
-                    "domain": "string|null",     # efficacy|safety|QoL|... (optional)
-                    "definition": "string|null", # how measured
-                    "measurement": "string|null",# mean/SD|median/IQR|N/%|HR|...
-                    "unit": "string|null",       # measurement unit if relevant
-                    "primary": "boolean|null",   # primary outcome?
-                    "timepoints": ["string"]     # e.g., ['baseline','3 months']
+                    "domain": "string|null",
+                    "definition": "string|null",
+                    "measurement": "string|null",
+                    "unit": "string|null",
+                    "primary": "boolean|null",
+                    "timepoints": ["string"]
                 }
             ],
             "results": {
@@ -274,7 +419,8 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
                     {
                         "outcome_id": "string",
                         "timepoint": "string",
-                        "group": "string",            # arm label or 'overall'
+                        "group": "string",
+                        "subgroup": "string|null",
                         "n": "integer|null",
                         "mean": "number|null",
                         "sd": "number|null",
@@ -283,22 +429,17 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
                         "iqr25": "number|null",
                         "iqr75": "number|null",
                         "unit": "string|null",
-                        "change": {
-                            "mean": "number|null",
-                            "sd": "number|null"
-                        },
+                        "change": {"mean": "number|null", "sd": "number|null"},
+                        "change_pct": "number|null",
                         "comparison": {
-                            "comparator": "string|null",    # other group label
+                            "comparator": "string|null",
                             "effect": "md|smd|difference_in_means|ratio_of_means|other|null",
                             "value": "number|null",
-                            "ci": ["number","number"] if True else None,
+                            "ci": "array[2 numbers]|null",
                             "p": "number|null",
                             "unit": "string|null"
                         },
-                        "evidence": {
-                            "page_hint": "integer|null",
-                            "quote": "string|null"
-                        }
+                        "evidence": {"page_hint": "integer|null", "quote": "string|null"}
                     }
                 ],
                 "dichotomous": [
@@ -306,38 +447,34 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
                         "outcome_id": "string",
                         "timepoint": "string",
                         "group": "string",
+                        "subgroup": "string|null",
                         "n": "integer|null",
                         "events": "integer|null",
                         "proportion": "number|null",
-                        "ci": ["number","number"] if True else None,
+                        "ci": "array[2 numbers]|null",
                         "comparison": {
                             "comparator": "string|null",
                             "effect": "rr|or|rd|other|null",
                             "value": "number|null",
-                            "ci": ["number","number"] if True else None,
+                            "ci": "array[2 numbers]|null",
                             "p": "number|null"
                         },
-                        "evidence": {
-                            "page_hint": "integer|null",
-                            "quote": "string|null"
-                        }
+                        "evidence": {"page_hint": "integer|null", "quote": "string|null"}
                     }
                 ],
                 "tte": [
                     {
                         "outcome_id": "string",
                         "group": "string",
+                        "subgroup": "string|null",
                         "n": "integer|null",
                         "events": "integer|null",
                         "median_time": "number|null",
                         "unit": "string|null",
                         "hr": "number|null",
-                        "ci": ["number","number"] if True else None,
+                        "ci": "array[2 numbers]|null",
                         "p": "number|null",
-                        "evidence": {
-                            "page_hint": "integer|null",
-                            "quote": "string|null"
-                        }
+                        "evidence": {"page_hint": "integer|null", "quote": "string|null"}
                     }
                 ]
             }
@@ -346,10 +483,12 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
             "Only include arms present in the study.",
             "If total N is present but per-arm N is not, leave n_randomized null.",
             "Capture dose as value+unit+schedule+route when explicitly reported.",
-            "For results, prefer numeric measures bound to a group and timepoint.",
-            "If no numeric data are present, you may still define outcomes but leave numeric fields null.",
-            "Always include evidence.page_hint and evidence.quote for numeric rows when feasible.",
-            "Do not invent values."
+            "For continuous results: if the article reports percentage change (e.g., 34%), set change_pct to the numeric percent (0–100) and leave mean/median null; do NOT set unit for percentage change rows.",
+            "For continuous results with absolute values, set mean/sd/etc. and set unit accordingly (e.g., µg/dL). Do not place percent changes into mean.",
+            "Use timepoints that exactly match the evidence (e.g., '30 minutes', '60 minutes', 'baseline', '3 months'). If the text is clearly 'after ACTH', append 'post-ACTH'.",
+            "Map groups to exact arm labels when possible (‘budesonide 9 mg’, ‘placebo’). Use ‘overall’ only if the article gives a pooled number.",
+            "Include a short evidence quote and an approximate page number for any numeric extraction.",
+            "If data are not explicitly present, leave fields null; do not invent values."
         ]
     }
 
@@ -374,22 +513,19 @@ def _llm_enrich(draft: Dict[str, Any], pdf_text: str, tei_xml: Optional[str]) ->
         except Exception:
             return None
 
+    # Normalize common issues
+    data = _normalize_llm_results(data)
+
     # Shape guards
     if not isinstance(data, dict):
         return None
     data.setdefault("study", {})
     data.setdefault("arms", [])
-    data.setdefault("outcome_defs", [])
-    data.setdefault("results", {"continuous": [], "dichotomous": [], "tte": []})
+    data.setdefault("outcomes", [])
     if not isinstance(data["arms"], list):
         data["arms"] = []
-    if not isinstance(data["outcome_defs"], list):
-        data["outcome_defs"] = []
-    if not isinstance(data["results"], dict):
-        data["results"] = {"continuous": [], "dichotomous": [], "tte": []}
-    for k in ("continuous", "dichotomous", "tte"):
-        if not isinstance(data["results"].get(k), list):
-            data["results"][k] = []
+    if not isinstance(data["outcomes"], list):
+        data["outcomes"] = []
 
     return data
 
@@ -398,7 +534,7 @@ def _merge_enrichment(base_draft: Dict[str, Any], enriched: Dict[str, Any], pdf_
     """Merge LLM results safely into the draft (no wild overrides)."""
     out = json.loads(json.dumps(base_draft))  # deep copy-ish
 
-    # --- Study fields ---
+    # Study fields
     s = out["study"]
     e = enriched.get("study", {})
 
@@ -420,7 +556,7 @@ def _merge_enrichment(base_draft: Dict[str, Any], enriched: Dict[str, Any], pdf_
     _update_str("condition")
     _update_year()
 
-    # --- Arms: update or insert; merge drug/dose ---
+    # Arms: update/insert; also merge drug/dose sub-objects
     def _norm(x: str) -> str:
         return re.sub(r"[^a-z0-9]+", "", (x or "").lower())
 
@@ -443,10 +579,14 @@ def _merge_enrichment(base_draft: Dict[str, Any], enriched: Dict[str, Any], pdf_
             out.setdefault("arms", []).append(target)
             existing_by_norm[norm] = target
 
-        # n_randomized
+        # n_randomized — DO NOT overwrite a non-null value discovered by heuristics/manual
         nr = arm.get("n_randomized")
         if isinstance(nr, int) and nr >= 0:
-            target["n_randomized"] = nr
+            current = target.get("n_randomized")
+            if current is None or current == nr:
+                target["n_randomized"] = nr
+            else:
+                _llm_log(f"keeping existing n_randomized={current} for '{target.get('label')}', LLM suggested {nr}")
 
         # drug
         drug = arm.get("drug")
@@ -474,189 +614,121 @@ def _merge_enrichment(base_draft: Dict[str, Any], enriched: Dict[str, Any], pdf_
             if d_out:
                 target["dose"] = d_out
 
-    # --- Outcomes (legacy UI compatibility) ---
-    # If LLM provided better structured 'outcomes' we could merge, but we leave current behavior as-is.
+    # Outcomes: merge with structured measures and optional comparisons
+    llm_outcomes: List[Dict[str, Any]] = []
+    for o in enriched.get("outcomes", []):
+        if not isinstance(o, dict):
+            continue
+        name = o.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        typ = o.get("type")
+        if not isinstance(typ, str) or not typ.strip():
+            typ = "other"
 
-    # --- NEW: outcome_defs (normalized) ---
-    if isinstance(enriched.get("outcome_defs"), list):
-        out["outcome_defs"] = []
-        for od in enriched["outcome_defs"]:
-            if not isinstance(od, dict):
-                continue
-            oid = od.get("outcome_id")
-            name = od.get("name")
-            typ = od.get("type")
-            if not (isinstance(oid, str) and oid.strip() and isinstance(name, str) and name.strip()):
-                continue
-            row: Dict[str, Any] = {
-                "outcome_id": oid.strip(),
-                "name": name.strip(),
-                "type": typ.strip() if isinstance(typ, str) and typ.strip() else "other",
-                "domain": od.get("domain") if isinstance(od.get("domain"), str) else None,
-                "definition": od.get("definition") if isinstance(od.get("definition"), str) else None,
-                "measurement": od.get("measurement") if isinstance(od.get("measurement"), str) else None,
-                "unit": od.get("unit") if isinstance(od.get("unit"), str) else None,
-                "primary": bool(od.get("primary")) if od.get("primary") is not None else None,
-                "timepoints": [t for t in od.get("timepoints", []) if isinstance(t, str) and t.strip()],
-            }
-            out["outcome_defs"].append(row)
+        # normalize timepoints
+        tps_in = o.get("timepoints")
+        norm_tps: List[Dict[str, Any]] = []
+        if isinstance(tps_in, list):
+            for tp in tps_in:
+                if not isinstance(tp, dict):
+                    continue
+                lab = tp.get("label")
+                if not isinstance(lab, str) or not lab.strip():
+                    continue
 
-    # --- NEW: results buckets (continuous / dichotomous / tte) ---
-    def _norm_evidence(ev: Any) -> Dict[str, Any]:
-        page = ev.get("page_hint") if isinstance(ev, dict) else None
-        quote = ev.get("quote") if isinstance(ev, dict) else None
-        ev_out: Dict[str, Any] = {}
-        if isinstance(page, int):
-            ev_out["page_hint"] = page
-        if isinstance(quote, str) and quote.strip():
-            ev_out["quote"] = quote.strip()
-        return ev_out
+                measures_in = tp.get("measures")
+                norm_measures: List[Dict[str, Any]] = []
+                if isinstance(measures_in, list):
+                    for m in measures_in:
+                        if not isinstance(m, dict):
+                            continue
+                        group = m.get("group")
+                        metric = m.get("metric")
+                        value = m.get("value")
+                        unit = m.get("unit")
+                        n = m.get("n")
 
-    out.setdefault("results", {"continuous": [], "dichotomous": [], "tte": []})
+                        row: Dict[str, Any] = {}
+                        if isinstance(group, str) and group.strip():
+                            row["group"] = group.strip()
+                        if isinstance(n, int) and n >= 0:
+                            row["n"] = n
+                        if isinstance(metric, str) and metric.strip():
+                            row["metric"] = metric.strip()
+                        if isinstance(value, (int, float)):
+                            row["value"] = float(value)
+                        if isinstance(unit, str) and unit.strip():
+                            row["unit"] = unit.strip()
 
-    # Continuous
-    cont_in = enriched.get("results", {}).get("continuous", [])
-    if isinstance(cont_in, list):
-        out["results"]["continuous"] = []
-        for r in cont_in:
-            if not isinstance(r, dict):
-                continue
-            row: Dict[str, Any] = {}
-            for k in ("outcome_id", "timepoint", "group", "unit"):
-                v = r.get(k)
-                if isinstance(v, str) and v.strip():
-                    row[k] = v.strip()
-            for k in ("n",):
-                v = r.get(k)
-                if isinstance(v, int) and v >= 0:
-                    row[k] = v
-            for k in ("mean", "sd", "se", "median", "iqr25", "iqr75"):
-                v = r.get(k)
-                if isinstance(v, (int, float)):
-                    row[k] = float(v)
-            ch = r.get("change")
-            if isinstance(ch, dict):
-                ch_out: Dict[str, Any] = {}
-                if isinstance(ch.get("mean"), (int, float)):
-                    ch_out["mean"] = float(ch["mean"])
-                if isinstance(ch.get("sd"), (int, float)):
-                    ch_out["sd"] = float(ch["sd"])
-                if ch_out:
-                    row["change"] = ch_out
-            cmp_in = r.get("comparison")
-            if isinstance(cmp_in, dict):
-                cmp_out: Dict[str, Any] = {}
-                if isinstance(cmp_in.get("comparator"), str) and cmp_in["comparator"].strip():
-                    cmp_out["comparator"] = cmp_in["comparator"].strip()
-                if isinstance(cmp_in.get("effect"), str) and cmp_in["effect"].strip():
-                    cmp_out["effect"] = cmp_in["effect"].strip()
-                if isinstance(cmp_in.get("value"), (int, float)):
-                    cmp_out["value"] = float(cmp_in["value"])
-                ci = cmp_in.get("ci")
+                        if row:
+                            norm_measures.append(row)
+
+                norm_tps.append({"label": lab.strip(), "measures": norm_measures})
+
+        # comparisons (optional)
+        comps_out: List[Dict[str, Any]] = []
+        comps_in = o.get("comparisons")
+        if isinstance(comps_in, list):
+            for c in comps_in:
+                if not isinstance(c, dict):
+                    continue
+                groups = c.get("groups")
+                effect = c.get("effect")
+                value = c.get("value")
+                ci = c.get("ci")
+                p = c.get("p")
+                unit = c.get("unit")
+                row: Dict[str, Any] = {}
+                if isinstance(groups, list) and len(groups) == 2 and all(isinstance(g, str) and g.strip() for g in groups):
+                    row["groups"] = [groups[0].strip(), groups[1].strip()]
+                if isinstance(effect, str) and effect.strip():
+                    row["effect"] = effect.strip()
+                if isinstance(value, (int, float)):
+                    row["value"] = float(value)
                 if isinstance(ci, list) and len(ci) == 2 and all(isinstance(x, (int, float)) for x in ci):
-                    cmp_out["ci"] = [float(ci[0]), float(ci[1])]
-                if isinstance(cmp_in.get("p"), (int, float)):
-                    cmp_out["p"] = float(cmp_in["p"])
-                if isinstance(cmp_in.get("unit"), str) and cmp_in["unit"].strip():
-                    cmp_out["unit"] = cmp_in["unit"].strip()
-                if cmp_out:
-                    row["comparison"] = cmp_out
-            ev = _norm_evidence(r.get("evidence"))
-            if ev:
-                row["evidence"] = ev
-            if row:
-                out["results"]["continuous"].append(row)
+                    row["ci"] = [float(ci[0]), float(ci[1])]
+                if isinstance(p, (int, float)):
+                    row["p"] = float(p)
+                if isinstance(unit, str) and unit.strip():
+                    row["unit"] = unit.strip()
+                if row:
+                    comps_out.append(row)
 
-    # Dichotomous
-    dich_in = enriched.get("results", {}).get("dichotomous", [])
-    if isinstance(dich_in, list):
-        out["results"]["dichotomous"] = []
-        for r in dich_in:
-            if not isinstance(r, dict):
-                continue
-            row: Dict[str, Any] = {}
-            for k in ("outcome_id", "timepoint", "group"):
-                v = r.get(k)
-                if isinstance(v, str) and v.strip():
-                    row[k] = v.strip()
-            v = r.get("n")
-            if isinstance(v, int) and v >= 0:
-                row["n"] = v
-            v = r.get("events")
-            if isinstance(v, int) and v >= 0:
-                row["events"] = v
-            v = r.get("proportion")
-            if isinstance(v, (int, float)):
-                row["proportion"] = float(v)
-            ci = r.get("ci")
-            if isinstance(ci, list) and len(ci) == 2 and all(isinstance(x, (int, float)) for x in ci):
-                row["ci"] = [float(ci[0]), float(ci[1])]
-            cmp_in = r.get("comparison")
-            if isinstance(cmp_in, dict):
-                cmp_out: Dict[str, Any] = {}
-                if isinstance(cmp_in.get("comparator"), str) and cmp_in["comparator"].strip():
-                    cmp_out["comparator"] = cmp_in["comparator"].strip()
-                if isinstance(cmp_in.get("effect"), str) and cmp_in["effect"].strip():
-                    cmp_out["effect"] = cmp_in["effect"].strip()
-                if isinstance(cmp_in.get("value"), (int, float)):
-                    cmp_out["value"] = float(cmp_in["value"])
-                ci2 = cmp_in.get("ci")
-                if isinstance(ci2, list) and len(ci2) == 2 and all(isinstance(x, (int, float)) for x in ci2):
-                    cmp_out["ci"] = [float(ci2[0]), float(ci2[1])]
-                if isinstance(cmp_in.get("p"), (int, float)):
-                    cmp_out["p"] = float(cmp_in["p"])
-                if cmp_out:
-                    row["comparison"] = cmp_out
-            ev = _norm_evidence(r.get("evidence"))
-            if ev:
-                row["evidence"] = ev
-            if row:
-                out["results"]["dichotomous"].append(row)
+        llm_outcomes.append({
+            "name": name.strip(),
+            "type": typ.strip(),
+            "timepoints": norm_tps if norm_tps else [{"label": "end of treatment", "measures": []}],
+            "subgroups": [],
+            **({"comparisons": comps_out} if comps_out else {}),
+        })
 
-    # Time-to-event
-    tte_in = enriched.get("results", {}).get("tte", [])
-    if isinstance(tte_in, list):
-        out["results"]["tte"] = []
-        for r in tte_in:
-            if not isinstance(r, dict):
-                continue
-            row: Dict[str, Any] = {}
-            for k in ("outcome_id", "group", "unit"):
-                v = r.get(k)
-                if isinstance(v, str) and v.strip():
-                    row[k] = v.strip()
-            for k in ("n", "events"):
-                v = r.get(k)
-                if isinstance(v, int) and v >= 0:
-                    row[k] = v
-            v = r.get("median_time")
-            if isinstance(v, (int, float)):
-                row["median_time"] = float(v)
-            v = r.get("hr")
-            if isinstance(v, (int, float)):
-                row["hr"] = float(v)
-            ci = r.get("ci")
-            if isinstance(ci, list) and len(ci) == 2 and all(isinstance(x, (int, float)) for x in ci):
-                row["ci"] = [float(ci[0]), float(ci[1])]
-            v = r.get("p")
-            if isinstance(v, (int, float)):
-                row["p"] = float(v)
-            ev = _norm_evidence(r.get("evidence"))
-            if ev:
-                row["evidence"] = ev
-            if row:
-                out["results"]["tte"].append(row)
+    if llm_outcomes:
+        out["outcomes"] = llm_outcomes
+
+    # Pass through outcome_defs & results if provided by the LLM
+    edefs = enriched.get("outcome_defs")
+    if isinstance(edefs, list) and edefs:
+        out["outcome_defs"] = edefs
+
+    eres = enriched.get("results")
+    if isinstance(eres, dict):
+        out["results"] = {
+            "continuous": eres.get("continuous") or [],
+            "dichotomous": eres.get("dichotomous") or [],
+            "tte": eres.get("tte") or [],
+        }
 
     return out
 
 
 # ---------------- Public entrypoint ----------------
-
 def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None) -> Dict[str, Any]:
     """
     Main extractor:
     - GROBID header + abstract
     - Heuristic arms
+    - Per-arm n heuristic from text
     - DOI/title/year fallbacks (PDF)
     - Optional LLM enrichment (USE_LLM=true)
     """
@@ -687,8 +759,11 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None) -> Dict[
             if md.get("year"):
                 draft["study"]["year"] = md["year"]
 
-    # ---------- Arms ----------
+    # ---------- Arms (heuristic) ----------
     draft["arms"] = _heuristic_arms(abstract_text, pdf_text)
+
+    # ---------- Per-arm n (heuristic) ----------
+    _fill_arm_ns_from_text(draft["arms"], abstract_text, pdf_text)
 
     # ---------- DOI fallback ----------
     if not draft["study"]["doi"]:
