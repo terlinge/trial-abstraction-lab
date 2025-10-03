@@ -1,45 +1,25 @@
-# main.py  — full file (forces OPENAI_API_KEY override; adds flags; health)
-
-from __future__ import annotations
-
+# main.py
 import os
 import uuid
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
-import requests
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
+import settings  # <-- uses backend/settings.py you already have
 from extractors import extract_first_pass
 
+# --- DB
+from db import engine, SessionLocal, Base
+from models import Document, Draft, Review, FinalExtract
+from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
-# ---------------- Settings ----------------
-
-class Settings(BaseSettings):
-    # existing
-    MOCK_MODE: bool = False
-    PORT: int = 8001
-    GROBID_URL: Optional[str] = None
-
-    # LLM-related (safe even if unused)
-    OPENAI_API_KEY: Optional[str] = None
-    OPENAI_MODEL: str = "gpt-4o-mini"
-    USE_LLM: bool = False
-
-    # don’t crash on unknown keys in .env
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_prefix="",
-        extra="ignore",
-    )
-
-settings = Settings()
-
+import requests
 
 # ---------------- App ----------------
-
 app = FastAPI(title="Trial Abstraction Backend")
 app.add_middleware(
     CORSMiddleware,
@@ -49,50 +29,60 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Ensure folders & tables exist
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(os.path.join(DATA_DIR, "cache"), exist_ok=True)
+Base.metadata.create_all(bind=engine)
 
-# in-memory store
-DB: Dict[str, Dict[str, Any]] = {}
-
+# In-memory map for quick UI state (DB is source of truth)
+MEM: Dict[str, Dict[str, Any]] = {}
 
 def _paths(doc_id: str) -> Dict[str, str]:
-    return {
-        "pdf": os.path.join(UPLOAD_DIR, f"{doc_id}.pdf"),
-    }
+    return {"pdf": os.path.join(UPLOAD_DIR, f"{doc_id}.pdf")}
 
-
-# --------------- Models for reviews -----------------
-
-class ReviewerPayload(BaseModel):
-    study: Optional[Dict[str, Any]] = None
-    arms: Optional[Dict[str, Any]] = None
-
-
-# --------------- Health helpers ---------------------
+def _db() -> Session:
+    return SessionLocal()
 
 def _check_grobid_alive() -> bool:
-    if not settings.GROBID_URL:
+    url = settings.GROBID_URL
+    if not url:
         return False
     try:
-        url = settings.GROBID_URL.rstrip("/") + "/api/isalive"
-        r = requests.get(url, timeout=2)
+        r = requests.get(url.rstrip("/") + "/api/isalive", timeout=3)
         return r.ok and (r.text.strip().lower() == "true")
     except Exception:
         return False
 
+# ---------------- Schemas ----------------
+class ReviewerPayload(BaseModel):
+    study: Optional[Dict[str, Any]] = None
+    arms: Optional[Dict[str, Any]] = None
 
-# --------------- Startup log ------------------------
+class UpsertDoc(BaseModel):
+    doc_id: str
+    filename: Optional[str] = None
 
+class SaveJSON(BaseModel):
+    doc_id: str
+    payload: Dict[str, Any]
+    meta: Optional[str] = None
+
+class SaveReview(BaseModel):
+    doc_id: str
+    reviewer: str
+    payload: Dict[str, Any]
+
+class ExtractBody(BaseModel):
+    doc_id: str
+
+# ---------------- Startup log ----------------
 print(f"[startup] MOCK_MODE={settings.MOCK_MODE}  GROBID_URL={settings.GROBID_URL}  USE_LLM={settings.USE_LLM}")
 
-
-# --------------- Routes -----------------------------
-
+# ---------------- Health ----------------
 @app.get("/api/health")
 def health():
-    """Frontend polls this to show a clear status banner."""
     grobid_alive = _check_grobid_alive()
     llm_configured = bool(settings.OPENAI_API_KEY)
     return {
@@ -105,7 +95,7 @@ def health():
         "api_port": settings.PORT,
     }
 
-
+# ---------------- Core: Upload ----------------
 @app.post("/api/upload")
 async def upload_pdf(file: UploadFile = File(...)):
     doc_id = str(uuid.uuid4())
@@ -113,7 +103,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     with open(p["pdf"], "wb") as out:
         out.write(await file.read())
 
-    DB[doc_id] = {
+    MEM[doc_id] = {
         "doc_id": doc_id,
         "filename": file.filename,
         "draft": None,
@@ -121,61 +111,82 @@ async def upload_pdf(file: UploadFile = File(...)):
         "reviewB": None,
         "final": None,
     }
-    return DB[doc_id]
 
+    # Ensure a Document row exists
+    try:
+        with _db() as db:
+            if not db.get(Document, doc_id):
+                db.add(Document(id=doc_id, filename=file.filename))
+                db.commit()
+    except SQLAlchemyError as e:
+        print(f"[db] upload save skipped: {e}")
+
+    print(f"[upload] doc_id={doc_id} filename={file.filename}")
+    return MEM[doc_id]
 
 @app.get("/api/doc/{doc_id}")
 def get_doc(doc_id: str):
-    return DB.get(doc_id, {"error": "not found", "doc_id": doc_id})
+    return MEM.get(doc_id, {"error": "not found", "doc_id": doc_id})
 
-
+# ---------------- Core: Extract (path param) ----------------
 @app.post("/api/extract/{doc_id}")
-def extract(doc_id: str):
-    doc = DB.get(doc_id)
-    if not doc:
-        return {"error": "not found", "doc_id": doc_id}
+def extract_path(doc_id: str, force_ocr: bool = False):
+    return _do_extract(doc_id, force_ocr=force_ocr)
 
-    # --- FORCE the runtime env to use .env values (overrides any stale machine/user var) ---
+# ---------------- Core: Extract (JSON body) ----------------
+@app.post("/api/extract")
+def extract_body(body: ExtractBody, force_ocr: bool = False):
+    return _do_extract(body.doc_id, force_ocr=force_ocr)
+
+def _do_extract(doc_id: str, force_ocr: bool = False):
+    doc = MEM.get(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"doc_id not found: {doc_id}")
+
+    # LLM env (force)
     if settings.OPENAI_API_KEY:
-        os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY  # hard override
+        os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
     os.environ["USE_LLM"] = "true" if settings.USE_LLM else "false"
     if settings.OPENAI_MODEL:
         os.environ["OPENAI_MODEL"] = settings.OPENAI_MODEL
-    # tiny debug so you can see which one is in play, safely masked:
     masked = (os.environ.get("OPENAI_API_KEY") or "")[:8]
-    print(f"[llm] env OPENAI_API_KEY now starts with: {masked}...")
+    print(f"[extract] start doc_id={doc_id}  model={settings.OPENAI_MODEL}  key={masked}...")
+
+    # Hard-require GROBID
+    if not settings.GROBID_URL:
+        raise HTTPException(status_code=503, detail="GROBID_URL not configured; extractor will not run without it.")
+    if not _check_grobid_alive():
+        raise HTTPException(status_code=503, detail=f"GROBID not reachable at {settings.GROBID_URL}; start it and retry.")
 
     p = _paths(doc_id)
-    # Run the extractor (which may use GROBID and/or LLM depending on config)
-    draft = extract_first_pass(p["pdf"], grobid_url=settings.GROBID_URL)
+    draft = extract_first_pass(p["pdf"], grobid_url=settings.GROBID_URL, force_ocr=force_ocr)
 
-    # Prefer flags from extractor; fallback to notes only if missing
+    # Normalize flags if missing
     flags_in = (draft or {}).get("_flags") or {}
-    notes_lower = ((draft or {}).get("study", {}).get("notes", "") or "").lower()
+    grobid_on = bool(flags_in.get("grobid"))
+    llm_used = bool(flags_in.get("llm"))
 
-    grobid_on = flags_in.get("grobid")
-    llm_used = flags_in.get("llm")
-
-    if grobid_on is None:
-        grobid_on = ("grobid=on" in notes_lower) or ("grobid tei" in notes_lower)
-    if llm_used is None:
-        llm_used = ("grobid + llm" in notes_lower) or ("llm=true" in notes_lower) or ("llm" in notes_lower)
-
-    draft["_flags"] = {
-        "grobid": bool(grobid_on),
-        "llm": bool(llm_used),
-    }
-
+    draft["_flags"] = {"grobid": grobid_on, "llm": llm_used}
     doc["draft"] = draft
+
+    # Persist the draft row
+    try:
+        with _db() as db:
+            drow = Draft(document_id=doc_id, payload=draft, source="grobid+llm" if (grobid_on and llm_used) else ("grobid" if grobid_on else "local"))
+            db.add(drow)
+            db.commit()
+    except SQLAlchemyError as e:
+        print(f"[db] draft save skipped: {e}")
+
+    print(f"[extract] done doc_id={doc_id}  flags={draft.get('_flags')}")
     return doc
 
-
+# ---------------- Reviews (in-memory quick save for UI) ----------------
 @app.post("/api/review/{doc_id}/{which}")
-def save_review(doc_id: str, which: str, payload: ReviewerPayload):
-    doc = DB.get(doc_id)
+def save_review_in_memory(doc_id: str, which: str, payload: ReviewerPayload):
+    doc = MEM.get(doc_id)
     if not doc:
         return {"error": "not found", "doc_id": doc_id}
-
     which = which.upper()
     if which == "A":
         doc["reviewA"] = payload.model_dump()
@@ -183,5 +194,86 @@ def save_review(doc_id: str, which: str, payload: ReviewerPayload):
         doc["reviewB"] = payload.model_dump()
     else:
         return {"error": "which must be A or B"}
-
     return {"ok": True, "doc_id": doc_id, "which": which}
+
+# ---------------- Persistence API (DB) ----------------
+@app.post("/api/doc/upsert")
+def upsert_document(body: UpsertDoc):
+    try:
+        with _db() as db:
+            doc = db.get(Document, body.doc_id)
+            if not doc:
+                db.add(Document(id=body.doc_id, filename=body.filename or None))
+            else:
+                if body.filename and body.filename != doc.filename:
+                    doc.filename = body.filename
+            db.commit()
+        return {"ok": True}
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/doc/save-draft")
+def save_draft(body: SaveJSON):
+    try:
+        with _db() as db:
+            doc = db.get(Document, body.doc_id)
+            if not doc:
+                doc = Document(id=body.doc_id)
+                db.add(doc)
+                db.flush()
+            d = Draft(document_id=doc.id, payload=body.payload, source=body.meta or None)
+            db.add(d)
+            db.commit()
+            return {"ok": True, "draft_id": d.id}
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/doc/save-review")
+def save_review_db(body: SaveReview):
+    try:
+        with _db() as db:
+            doc = db.get(Document, body.doc_id)
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+            r = Review(document_id=doc.id, reviewer=body.reviewer, payload=body.payload)
+            db.add(r)
+            db.commit()
+            return {"ok": True, "review_id": r.id}
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/doc/save-final")
+def save_final(body: SaveJSON):
+    try:
+        with _db() as db:
+            doc = db.get(Document, body.doc_id)
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+            f = FinalExtract(document_id=doc.id, payload=body.payload)
+            db.add(f)
+            db.commit()
+            return {"ok": True, "final_id": f.id}
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/doc/{doc_id}/latest")
+def get_latest(doc_id: str):
+    try:
+        with _db() as db:
+            doc = db.get(Document, doc_id)
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+            latest_draft = db.execute(
+                select(Draft).where(Draft.document_id == doc_id).order_by(Draft.id.desc())
+            ).scalars().first()
+            latest_final = db.execute(
+                select(FinalExtract).where(FinalExtract.document_id == doc_id).order_by(FinalExtract.id.desc())
+            ).scalars().first()
+            return {
+                "doc_id": doc.id,
+                "filename": doc.filename,
+                "latest_draft": latest_draft.payload if latest_draft else None,
+                "latest_final": latest_final.payload if latest_final else None,
+            }
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -27,7 +27,8 @@ type Draft = {
   study: Study;
   arms: Arm[];
   outcomes: Outcome[];
-  _flags?: { grobid?: boolean; llm?: boolean };
+  _flags?: { grobid?: boolean; llm?: boolean; ocr?: boolean; camelot_tables?: boolean };
+  _tables?: any[];
 };
 
 type ReviewField = {
@@ -62,7 +63,9 @@ type Health = {
   api_port: number;
 };
 
-const API = (import.meta as any).env?.VITE_API || "http://127.0.0.1:8001";
+// Support both VITE_API (older) and VITE_API_URL (this repo's .env.local) with a safe fallback
+const API =
+  (import.meta as any).env?.VITE_API || (import.meta as any).env?.VITE_API_URL || "http://127.0.0.1:8001";
 
 // ---------- small helpers ----------
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -142,6 +145,7 @@ function ReviewerPanel({
 }) {
   const [review, setReview] = useState<ReviewerReview>(initial || { study: {}, arms: {} });
   const [toast, setToast] = useState("");
+  const [forceOcr, setForceOcr] = useState(false);
 
   useEffect(() => {
     if (initial) setReview(initial);
@@ -460,6 +464,7 @@ export default function App() {
   const [serverDoc, setServerDoc] = useState<ServerDoc | null>(null);
   const [toast, setToast] = useState("");
   const [health, setHealth] = useState<Health | null>(null);
+  const [forceOcr, setForceOcr] = useState(false);
 
   // Status bar — use backend health + draft flags as fallback
   const grobidOn = useMemo(() => {
@@ -474,6 +479,11 @@ export default function App() {
     const byHealth = Boolean(health?.use_llm && health?.llm_configured);
     return Boolean(flag ?? byNotes ?? byHealth);
   }, [serverDoc, health]);
+
+  const ocrOn = useMemo(() => {
+    const flag = serverDoc?.draft?._flags?.ocr;
+    return Boolean(flag);
+  }, [serverDoc]);
 
   useEffect(() => {
     // fetch backend health once on load
@@ -512,7 +522,7 @@ export default function App() {
     if (!docId) {
       setToast("Upload a PDF first"); await sleep(1200); setToast(""); return;
     }
-    const r = await fetch(`${API}/api/extract/${docId}`, { method: "POST" });
+    const r = await fetch(`${API}/api/extract/${docId}?force_ocr=${forceOcr ? "true" : "false"}`, { method: "POST" });
     const j = await r.json();
     setServerDoc(j);
     setToast("Draft generated");
@@ -643,6 +653,9 @@ export default function App() {
           >
             Copy Draft JSON
           </button>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8 }}>
+            <input type="checkbox" checked={forceOcr} onChange={(e) => setForceOcr(e.target.checked)} /> Force OCR
+          </label>
         </div>
 
         {serverDoc?.draft ? (
@@ -652,6 +665,18 @@ export default function App() {
               <span className="badge" style={{ marginLeft: 8 }}>
                 {llmOn ? "LLM: ON" : "LLM: OFF"}
               </span>
+              <span className="badge" style={{ marginLeft: 8 }}>
+                {Boolean(serverDoc?.draft?._flags && (serverDoc.draft._flags as any).ocr) ? "OCR: ON" : "OCR: OFF"}
+              </span>
+              {serverDoc?.draft?._tables && (
+                <button
+                  className="btn ghost"
+                  style={{ marginLeft: 8 }}
+                  onClick={() => copy(JSON.stringify(serverDoc.draft!._tables, null, 2))}
+                >
+                  Copy Tables JSON
+                </button>
+              )}
             </div>
             <div className="code" style={{ marginTop: 10 }}>
               <pre>{JSON.stringify(serverDoc.draft, null, 2)}</pre>
