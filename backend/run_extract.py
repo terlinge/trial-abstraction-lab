@@ -17,11 +17,28 @@ if not os.path.exists(pdf_path):
 try:
     # Import the extractor (it uses optional libraries; in this env they should be present)
     from extractors import extract_first_pass
+    # Also expose diagnostic flags from the extractors module (they're set at import-time)
+    import extractors as _ext_mod
 except Exception as e:
     print('Failed to import extractors:', repr(e))
     raise
 
 print('Running extract_first_pass with force_ocr=True...')
+# Diagnostic: show presence of optional OCR/table libs so it's clear why OCR may be skipped
+try:
+    has_pdf2image = bool(getattr(_ext_mod, 'convert_from_path', None))
+    has_pytesseract = bool(getattr(_ext_mod, 'pytesseract', None))
+    has_pillow = bool(getattr(_ext_mod, 'Image', None))
+    has_camelot = False
+    try:
+        import camelot  # type: ignore
+        has_camelot = True
+    except Exception:
+        has_camelot = False
+    print('Diagnostics: pdf2image=', has_pdf2image, 'pytesseract=', has_pytesseract, 'Pillow=', has_pillow, 'camelot=', has_camelot)
+except Exception:
+    pass
+
 draft = extract_first_pass(pdf_path, force_ocr=True)
 
 out_path = os.path.join(os.path.dirname(__file__), 'out_draft.json')

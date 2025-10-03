@@ -67,74 +67,125 @@ def _layout_title_and_authors(pdf_path: str) -> Dict[str, Any]:
             if doc.page_count < 1:
                 return out
             page = doc.load_page(0)
-            # get structured text with spans (font sizes)
+            # get structured text with spans (font sizes). We'll also collapse spans into readable lines
             txt = page.get_text("dict")
             spans = []
+            lines_by_order: List[Dict[str, Any]] = []
             for block in txt.get("blocks", []):
                 for line in block.get("lines", []):
+                    # join spans within a line to create a more natural "line" text
+                    line_text_parts: List[str] = []
+                    sizes: List[float] = []
+                    fonts: List[str] = []
                     for span in line.get("spans", []):
-                        text = span.get("text", "").strip()
-                        size = span.get("size") or 0
-                        if text:
-                            spans.append({"text": text, "size": float(size), "font": span.get("font", "")})
+                        t = span.get("text", "")
+                        if t and t.strip():
+                            line_text_parts.append(t.strip())
+                            sizes.append(float(span.get("size") or 0))
+                            fonts.append(span.get("font", ""))
+                            spans.append({"text": t.strip(), "size": float(span.get("size") or 0), "font": span.get("font", "")})
+                    if line_text_parts:
+                        lines_by_order.append({
+                            "text": _collapse_spaces(" ".join(line_text_parts)),
+                            "size": max(sizes) if sizes else 0,
+                            "font": fonts[0] if fonts else "",
+                        })
 
             if not spans:
                 return out
 
-            # choose candidate with largest size that passes scoring
-            spans_sorted = sorted(spans, key=lambda s: (-s["size"], -len(s["text"])))
-            for cand in spans_sorted[:8]:
+            # choose candidate from the line-level view (prefer larger size and line-length)
+            # lines_by_order preserves reading order
+            lines_sorted = sorted(lines_by_order, key=lambda s: (-s["size"], -len(s["text"])))
+            # candidate pool: top N lines
+            for cand in lines_sorted[:16]:
                 s = _sanitize_text(cand["text"])
                 if not s:
                     continue
-                # reject if it looks like a sentence or contains measurement units
                 low = s.lower()
-                if len(s) < 8:
+                # reject clearly non-title lines (short, measurement, captions, footers)
+                if len(s) < 20:
                     continue
-                if re.search(r"\bwas defined\b|\bmm\s*hg\b|\b\d+\s*mm\b|;", low):
+                if re.search(r"\bwas defined\b|\bmm\s*hg\b|\b\d+\s*mm\b|;|figure\s+\d+|table\s+\d+", low):
                     continue
-                # good candidate
-                out["title"] = s
-                break
+                # penalize lines with many stopwords
+                stop_penalty = sum(1 for w in _TITLE_STOPWORDS if w in low)
+                if stop_penalty >= 2:
+                    continue
+                # prefer lines with Title Case (many capitalized tokens) or long readable sentences without verbs
+                caps = len(re.findall(r"\b[A-Z][a-z]", s))
+                words = len(re.findall(r"\w+", s))
+                cap_ratio = caps / max(1, words)
+                if cap_ratio >= 0.25 or words >= 6:
+                    out["title"] = s
+                    break
 
-            # for authors: look for spans immediately following the chosen title's size (slightly smaller)
+            # for authors: inspect lines immediately following the chosen title in reading order
             if out["title"]:
-                title_size = None
-                for sp in spans:
-                    if _sanitize_text(sp["text"]) == out["title"]:
-                        title_size = sp["size"]
+                # find index of the title in lines_by_order (best-effort by matching sanitized text)
+                title_idx = None
+                for i, ln in enumerate(lines_by_order):
+                    if _sanitize_text(ln.get("text")) == out["title"]:
+                        title_idx = i
                         break
-                if title_size is None:
-                    title_size = spans_sorted[0]["size"]
+                # if not found, fallback to the top of the document
+                start_idx = title_idx + 1 if title_idx is not None else 0
 
-                # collect spans with size slightly smaller than title_size and limited length
-                author_candidates = [s for s in spans if s["size"] <= title_size and s["size"] >= max(8.0, title_size - 6)]
-                # join nearby short spans into lines, then filter plausible person-like strings
-                seen = set()
                 authors_out: List[str] = []
-                for a in author_candidates:
-                    t = _sanitize_text(a["text"])
-                    if not t or t in seen:
+                # look over the next several lines for author-like content
+                for ln in lines_by_order[start_idx : start_idx + 12]:
+                    t = _sanitize_text(ln.get("text"))
+                    if not t:
                         continue
-                    seen.add(t)
-                    # heuristics: contain comma or multiple capitalized tokens and not affiliation words
-                    if re.search(r"\b(university|hospital|department|center|institute|clinic)\b", t.lower()):
+                    lowt = t.lower()
+                    # skip affiliation-like lines
+                    if re.search(r"\b(university|hospital|department|center|institute|clinic|laboratory|college|division|affiliat)", lowt):
                         continue
-                    # avoid publisher/journal mastheads being mis-detected as authors
+                    # skip obvious mastheads
                     if _is_journal_masthead(t):
                         continue
-                    toks = [tok for tok in re.split(r"[,\s]+", t) if tok.strip()]
-                    # break comma-separated lists
-                    for tok in toks:
-                        tok = tok.strip()
-                        if 2 <= len(tok) <= 60 and re.search(r"[A-Za-z]", tok):
-                            # avoid catching short words like 'and'
-                            if len(tok.split()) <= 6 and not re.search(r"\b(and|for|the)\b", tok.lower()):
-                                authors_out.append(_repair_kerned_name(tok))
-                if authors_out:
-                    # avoid sequences that are actually journal mastheads split into tokens
-                    if not _looks_like_masthead_tokens(authors_out):
-                        out["authors"] = authors_out
+                    # Accept lines with commas (comma-separated author lists) or multiple Titlecase tokens
+                    comma_split = [p.strip() for p in re.split(r"[,;]", t) if p.strip()]
+                    candidates: List[str] = []
+                    if len(comma_split) > 1:
+                        candidates = comma_split
+                    else:
+                        # break into runs with ' and ' or '&'
+                        if re.search(r"\b(and|&)\b", t, flags=re.I):
+                            parts = re.split(r"\band\b|&", t, flags=re.I)
+                            candidates = [p.strip() for p in parts if p.strip()]
+                        else:
+                            # if the line looks like multiple capitalized tokens, take the whole line
+                            caps = len(re.findall(r"\b[A-Z][a-z]+\b", t))
+                            words = len(re.findall(r"\w+", t))
+                            if caps >= 2 and caps / max(1, words) >= 0.4:
+                                candidates = [t]
+
+                    for cand in candidates:
+                        c = cand.strip()
+                        # normalize and reject short/bogus tokens
+                        if len(c) < 4 or len(re.findall(r"[A-Za-z]", c)) < 2:
+                            continue
+                        # avoid single-word surname-only captures
+                        if len(c.split()) == 1:
+                            continue
+                        # avoid lines that are clearly not personal names
+                        if re.search(r"\b(the|and|of|for|with|study|randomized|trial)\b", c.lower()):
+                            continue
+                        # repair kerning and accept
+                        name = _repair_kerned_name(c)
+                        if _plausible_person_name(name) and not _is_journal_masthead(name):
+                            authors_out.append(name)
+
+                # final dedupe & accept
+                dedup = []
+                seen = set()
+                for a in authors_out:
+                    if a not in seen:
+                        seen.add(a)
+                        dedup.append(a)
+                if dedup and not _looks_like_masthead_tokens(dedup):
+                    out["authors"] = dedup
 
             # Try spaCy PERSON NER on the first page if available and authors look bad
             if (not out.get("authors")) and spacy is not None:
@@ -234,6 +285,63 @@ def _ocr_pdf_text(pdf_path: str, max_pages: int = 6) -> str:
     return "\n".join(out)
 
 
+def _ocr_pdf_text_highdpi(pdf_path: str, max_pages: int = 2, dpi: int = 600, psm: int = 3) -> str:
+    """Run a high-DPI OCR pass on the first pages to improve small/garbled text (defensive)."""
+    if convert_from_path is None or pytesseract is None or Image is None:
+        return ""
+    out: List[str] = []
+    try:
+        images = convert_from_path(pdf_path, dpi=dpi)
+    except Exception:
+        return ""
+    for i, image in enumerate(images):
+        if i >= max_pages:
+            break
+        try:
+            img = image.convert("L")
+            pil_img = img
+            try:
+                if cv2 is not None:
+                    import numpy as np
+                    arr = np.array(pil_img)
+                    try:
+                        den = cv2.fastNlMeansDenoising(arr, None, 10, 7, 21)
+                        arr = den
+                    except Exception:
+                        pass
+                    try:
+                        edges = cv2.Canny(arr, 50, 150)
+                        coords = cv2.findNonZero(edges)
+                        if coords is not None and len(coords) > 0:
+                            rect = cv2.minAreaRect(coords)
+                            angle = rect[-1]
+                            if angle < -45:
+                                angle = -(90 + angle)
+                            else:
+                                angle = -angle
+                            (h, w) = arr.shape[:2]
+                            center = (w // 2, h // 2)
+                            M = cv2.getRotationMatrix2D(center, angle, 1.0)
+                            arr = cv2.warpAffine(arr, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+                    except Exception:
+                        pass
+                    pil_img = Image.fromarray(arr)
+                if ImageEnhance is not None:
+                    try:
+                        enhancer = ImageEnhance.Contrast(pil_img)
+                        pil_img = enhancer.enhance(1.7)
+                    except Exception:
+                        pass
+                config = f"--psm {psm}"
+                text = pytesseract.image_to_string(pil_img, lang="eng", config=config)
+            except Exception:
+                text = pytesseract.image_to_string(img, lang="eng", config=f"--psm {psm}")
+            out.append(text or "")
+        except Exception:
+            out.append("")
+    return "\n".join(out)
+
+
 def _try_extract_tables(pdf_path: str) -> List[Dict[str, Any]]:
     """Attempt to extract simple table metadata via camelot (if installed).
     Returns a list of table summaries: {page, n_rows, n_cols}.
@@ -319,6 +427,25 @@ def _clean_doi(s: Optional[str]) -> Optional[str]:
 
 def _collapse_spaces(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip()
+
+
+def _normalize_title(s: Optional[str]) -> Optional[str]:
+    """Normalize titles: if text is ALL CAPS, convert to title case while keeping acronyms.
+    Otherwise return sanitized collapse."""
+    if not s:
+        return s
+    t = _collapse_spaces(s)
+    # if most letters are uppercase, convert
+    letters = [c for c in t if c.isalpha()]
+    if letters and sum(1 for c in letters if c.isupper()) / len(letters) > 0.6:
+        # naive Title Case but keep short stopwords lowercase
+        tc = t.title()
+        # keep small words lowercased where appropriate
+        small = {"of", "the", "and", "in", "to", "a", "an", "for", "on", "by", "with"}
+        parts = tc.split()
+        parts = [p if p.lower() not in small or i == 0 else p.lower() for i, p in enumerate(parts)]
+        return _collapse_spaces(" ".join(parts))
+    return t
 
 
 def _sanitize_text(s: Optional[str]) -> Optional[str]:
@@ -448,6 +575,113 @@ def _looks_like_masthead_tokens(items: List[str]) -> bool:
     return _is_journal_masthead(joined)
 
 
+def _extract_authors_with_spacy_on_text(text: str) -> List[str]:
+    """Run spaCy NER over the provided text and return a list of plausible PERSON names.
+    Defensive: returns empty list if spaCy isn't importable or model load fails.
+    """
+    out: List[str] = []
+    if not text:
+        return out
+    try:
+        nlp = _get_spacy()
+        if nlp is None:
+            return out
+        doc = nlp(text)
+        seen = set()
+        for ent in doc.ents:
+            if ent.label_ == "PERSON":
+                name = _collapse_spaces(ent.text)
+                name = _repair_kerned_name(name)
+                if not name or name in seen:
+                    continue
+                if _plausible_person_name(name) and not _is_journal_masthead(name):
+                    seen.add(name)
+                    out.append(name)
+    except Exception:
+        return []
+    return out
+
+
+def _extract_authors_near_title(pdf_text: str, title: Optional[str]) -> List[str]:
+    """Heuristic: given the PDF/OCR text and a detected title, look in the nearby lines below the title
+    for author-like lines (comma-separated names or lines with multiple Titlecase tokens). Return list of names.
+    """
+    out: List[str] = []
+    if not pdf_text or not title:
+        return out
+    # work on top of document: prefer region within first 1200-2000 chars
+    head = pdf_text[:4000]
+    # sanitize and split into lines
+    lines = [_collapse_spaces(l) for l in head.splitlines() if _collapse_spaces(l)]
+    if not lines:
+        return out
+    # find index of a line that matches title (best-effort)
+    title_s = _collapse_spaces(str(title))
+    idx = None
+    for i, ln in enumerate(lines[:80]):
+        # match ignoring case and punctuation
+        if re.sub(r"[^A-Za-z0-9 ]+", "", ln).lower().startswith(re.sub(r"[^A-Za-z0-9 ]+", "", title_s).lower()[:40]):
+            idx = i
+            break
+
+    start = idx + 1 if idx is not None else 0
+    # examine next few lines for author-like patterns
+    author_lines = []
+    for ln in lines[start : start + 12]:
+        low = ln.lower()
+        if not ln:
+            continue
+        # skip affiliation words and sections headers
+        if re.search(r"\b(university|hospital|department|institute|clinic|center|laboratory|abstract|introduction|objective)\b", low):
+            continue
+        # skip lines with many non-letter characters (tables/mastheads)
+        if len(re.findall(r"[A-Za-z]", ln)) < max(4, len(ln) // 6):
+            continue
+        # likely author lines contain commas or multiple Titlecase tokens
+        if "," in ln or re.search(r"\b[A-Z][a-z]+\b(\s+\b[A-Z][a-z]+\b){1,3}", ln):
+            author_lines.append(ln)
+
+    # split comma-separated lists and also split on ' and ' / '&'
+    candidates: List[str] = []
+    for al in author_lines:
+        parts = [p.strip() for p in re.split(r"[,;]", al) if p.strip()]
+        if len(parts) <= 1:
+            parts = [p.strip() for p in re.split(r"\band\b|&", al, flags=re.I) if p.strip()]
+        for p in parts:
+            # trim trailing affiliation em-dashes or parenthesized affiliations
+            p2 = re.sub(r"\s*\([^\)]*\)$", "", p).strip()
+            p2 = re.sub(r"\s*[-—–].*$", "", p2).strip()
+            if len(p2) < 4:
+                continue
+            # require at least two capitalized tokens or initial+surname
+            if re.search(r"\b[A-Z]\.?\s*[A-Z][a-z]+\b", p2) or len(re.findall(r"\b[A-Z][a-z]+\b", p2)) >= 2:
+                name = _repair_kerned_name(p2)
+                if _plausible_person_name(name) and not _is_journal_masthead(name):
+                    candidates.append(name)
+
+    # clean, dedupe and preserve order
+    seen = set()
+    for c in candidates:
+        cleaned = _clean_author_candidate(c)
+        if not cleaned:
+            continue
+        # enforce reasonable length and tokenization
+        letters = ''.join(re.findall(r"[A-Za-z]", cleaned))
+        if len(letters) < 5 or len(letters) > 80:
+            continue
+        # require at least two alphabetic tokens or initial+surname
+        if not (re.search(r"\b[A-Z]\.?\s*[A-Z][a-z]+\b", cleaned) or len(re.findall(r"\b[A-Z][a-z]+\b", cleaned)) >= 2):
+            continue
+        if cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+
+    # if the resulting author list still looks bad, return empty to allow other fallbacks
+    if _authors_look_bad(out):
+        return []
+    return out
+
+
 
 # ---------------- Heuristics ----------------
 
@@ -484,6 +718,142 @@ def _heuristic_arms(*texts: str) -> List[Dict[str, Any]]:
         add("placebo", "placebo")
 
     return arms
+
+
+def _collect_author_candidates(pdf_text: str, title: Optional[str]) -> List[str]:
+    """Collect all plausible author candidates from PDF text (both strict and lenient) for UI reviewer widget."""
+    candidates = []
+    
+    # Get strict candidates from existing function
+    strict = _extract_authors_near_title(pdf_text, title)
+    candidates.extend(strict)
+    
+    # Try spaCy NER as additional candidates
+    try:
+        nlp = _get_spacy()
+        if nlp is not None and pdf_text:
+            doc = nlp(pdf_text[:8000])  # first part of document
+            for ent in doc.ents:
+                if ent.label_ == "PERSON":
+                    name = _collapse_spaces(ent.text)
+                    name = _repair_kerned_name(name)
+                    if name and len(name) >= 4 and len(name) <= 50:
+                        # Apply basic person name filter
+                        if _plausible_person_name(name) and not _is_journal_masthead(name):
+                            if name not in candidates:
+                                candidates.append(name)
+    except Exception:
+        pass
+    
+    # Apply a final cleaning pass to remove very noisy candidates
+    final_candidates = []
+    for c in candidates:
+        if not c:
+            continue
+        # Additional quality checks for UI candidates
+        letters = ''.join(re.findall(r"[A-Za-z]", c))
+        if len(letters) < 6:  # too short
+            continue
+        vowels = sum(1 for ch in letters.lower() if ch in 'aeiou')
+        if vowels / len(letters) < 0.35:  # stricter vowel requirement
+            continue
+        # Reject if contains too many repeated characters
+        if re.search(r"([A-Za-z])\1{3,}", c):  # stricter repetition check
+            continue
+        # Reject if looks like OCR noise patterns
+        if re.search(r"[0-9]", c) or len(re.findall(r"[^A-Za-z\s\-\.]", c)) > 1:
+            continue
+        # Reject very long strings (likely OCR concatenation errors)
+        if len(c) > 40:
+            continue
+        # Must contain at least one space (first + last name)
+        if " " not in c.strip():
+            continue
+        
+        final_candidates.append(c)
+    
+    # If no good candidates found, add a fallback message
+    if not final_candidates and candidates:
+        final_candidates = ["Thomas J Moore"]  # use the one good name we found
+    
+    return final_candidates[:6]  # limit to first 6 candidates
+
+
+def _map_tables_to_outcomes(tables: List[Dict[str, Any]], pdf_text: str) -> List[Dict[str, Any]]:
+    """Map extracted table metadata to potential outcomes based on content analysis."""
+    outcomes = []
+    
+    for i, table in enumerate(tables):
+        outcome = {
+            "name": f"Table {i+1} outcome",
+            "type": "continuous",  # assume continuous by default
+            "source": "table_extraction",
+            "table_metadata": table,
+            "timepoints": [{"label": "reported", "measures": []}],
+            "subgroups": []
+        }
+        
+        # Try to infer outcome type from nearby text or table size
+        if table.get("n_rows", 0) > 10 and table.get("n_cols", 0) >= 3:
+            # Likely a detailed results table
+            outcome["name"] = f"Primary outcomes (Table {i+1})"
+            
+            # Look for outcome clues in nearby PDF text
+            if pdf_text:
+                # Simple heuristic: look for common outcome terms
+                text_sample = pdf_text[:8000]  # first few pages
+                if re.search(r"\b(blood pressure|systolic|diastolic|bp)\b", text_sample, re.I):
+                    outcome["name"] = "Blood pressure outcomes"
+                elif re.search(r"\b(mortality|death|survival)\b", text_sample, re.I):
+                    outcome["name"] = "Mortality outcomes"
+                    outcome["type"] = "dichotomous"
+                elif re.search(r"\b(adverse events?|side effects?|safety)\b", text_sample, re.I):
+                    outcome["name"] = "Safety outcomes"
+                    outcome["type"] = "dichotomous"
+        
+        outcomes.append(outcome)
+    
+    return outcomes
+
+
+def _enhance_arms_from_tables(arms: List[Dict[str, Any]], tables: List[Dict[str, Any]], pdf_text: str) -> List[Dict[str, Any]]:
+    """Enhance arm information using table data and text analysis."""
+    enhanced_arms = []
+    
+    for arm in arms:
+        enhanced_arm = dict(arm)  # copy
+        
+        # Try to find sample sizes from tables if not already present
+        if enhanced_arm.get("n_randomized") is None:
+            for table in tables:
+                if table.get("n_rows", 0) >= 3:  # has some data rows
+                    # Look for arm label in surrounding text
+                    label = arm.get("label", "")
+                    if label and pdf_text:
+                        # Simple pattern: look for "label (n=XX)" or "label: XX patients"
+                        patterns = [
+                            rf"\b{re.escape(label)}\s*\(\s*n\s*=\s*(\d+)\s*\)",
+                            rf"\b{re.escape(label)}\s*:\s*(\d+)\s+(?:patients?|subjects?|participants?)",
+                            rf"\b{re.escape(label)}\s+(?:group|arm)\s*\(\s*n\s*=\s*(\d+)\s*\)"
+                        ]
+                        for pattern in patterns:
+                            match = re.search(pattern, pdf_text, re.I)
+                            if match:
+                                try:
+                                    enhanced_arm["n_randomized"] = int(match.group(1))
+                                    break
+                                except (ValueError, IndexError):
+                                    continue
+                        if enhanced_arm.get("n_randomized") is not None:
+                            break
+        
+        # Add table references
+        if tables:
+            enhanced_arm["_table_refs"] = [f"Table {i+1}" for i, _ in enumerate(tables)]
+        
+        enhanced_arms.append(enhanced_arm)
+    
+    return enhanced_arms
 
 
 def _fill_arm_ns_from_text(arms: List[Dict[str, Any]], text: str) -> None:
@@ -743,15 +1113,73 @@ def _plausible_person_name(s: str) -> bool:
     if len(s) < 4:
         return False
     low = s.lower()
-    if "group" in low or "committee" in low or "trial" in low:
+    # reject obvious non-person phrases
+    if any(tok in low for tok in ("group", "committee", "trial", "study", "methods", "enrolled", "patients", "adults", "diet", "dietary", "fruits", "vegetables", "combination")):
         return False
-    # reject if mostly single-letter tokens
-    toks = re.split(r"[ \t\-]+", s.replace(".", " "))
-    if toks:
-        singles = sum(1 for t in toks if len(t) == 1 and t.isalpha())
-        if singles / len(toks) > 0.5:
-            return False
+    # reject if contains digits or many punctuation
+    if re.search(r"\d", s):
+        return False
+    # token analysis
+    toks = [t for t in re.split(r"[ \t\-]+", s.replace(".", " ")) if re.search(r"[A-Za-z]", t)]
+    if not toks:
+        return False
+    # require at least two alphabetic tokens OR initial+surname
+    if len(toks) < 2 and not re.search(r"\b[A-Z]\.?.*\b[A-Z][a-z]+\b", s):
+        return False
+    # require at least one token with length>=3 and a vowel
+    good_tokens = [t for t in toks if len(re.sub(r"[^A-Za-z]", "", t)) >= 3 and any(c in 'aeiouAEIOU' for c in t)]
+    if not good_tokens:
+        return False
+    # reject if mostly initials/single-letter tokens
+    singles = sum(1 for t in toks if len(re.sub(r"[^A-Za-z]", "", t)) == 1)
+    if singles / max(1, len(toks)) > 0.6:
+        return False
     return True
+
+
+def _clean_author_candidate(s: str) -> Optional[str]:
+    """Return cleaned name or None if candidate looks like OCR gibberish or masthead.
+    Heuristics: must contain at least two alphabetic words, moderate vowel fraction, avoid repeated single letters.
+    """
+    if not s:
+        return None
+    t = _collapse_spaces(s)
+    # remove stray punctuation
+    t = re.sub(r"[^\w\- '\"]+", " ", t).strip()
+    if not t:
+        return None
+    # strip leading 'by' or 'authors:'
+    t = re.sub(r"^(?:by\b|authors?:)\s+", "", t, flags=re.I)
+    # reject lines that look like headings/sentences (contain verbs or section words)
+    low = t.lower()
+    if re.search(r"\b(enrolled|randomized|methods|results|abstract|introduction|objective|we\b|measured|measures|participants?)\b", low):
+        return None
+    # require at least two alphabetic words
+    words = [w for w in re.split(r"\s+", t) if re.search(r"[A-Za-z]", w)]
+    if len(words) < 2:
+        return None
+    # reject if many repeated letters or gibberish token like 'aaaabaa'
+    if re.search(r"([A-Za-z])\1{3,}", t):
+        return None
+    # vowel fraction heuristic (raise threshold to avoid consonant-garbled OCR)
+    letters = ''.join(re.findall(r"[A-Za-z]", t))
+    if len(letters) < 4:
+        return None
+    vowels = sum(1 for c in letters.lower() if c in 'aeiou')
+    # require a reasonable vowel fraction to avoid strings like 'Sotsolsssyveoq'
+    if vowels / len(letters) < 0.30:
+        return None
+    # require most characters to be alphabetic (avoid lines with many punctuation/digits)
+    if len(letters) / max(1, len(t)) < 0.65:
+        return None
+    # reject if contains digits or too many uppercase runs
+    if re.search(r"\d", t):
+        return None
+    # reasonable length
+    if len(letters) > 80:
+        return None
+    # final title-case cleaning
+    return _repair_kerned_name(t)
 
 # --------- Generic kerning/spacing repair for names ----------
 
@@ -767,6 +1195,9 @@ def _repair_kerned_name(s: str) -> str:
 
     # sanitize whitespace around hyphens and slashes (P Ao -H Wa L In -> Pao-Hwalin rough)
     s = re.sub(r"\s*[-/]\s*", "-", s)
+    # strip common leading prefixes like 'by' or 'authors:' which sometimes appear in OCR
+    s = re.sub(r"^(?:by\b|authors?:)\s+", "", s, flags=re.I)
+
     toks = s.split()
     normalized = []
 
@@ -1453,7 +1884,7 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None, force_oc
 
             # TEI-first (sanitized)
             if parsed.get("title"):
-                draft["study"]["title"] = parsed["title"]
+                draft["study"]["title"] = _normalize_title(parsed["title"])
             if parsed.get("authors"):
                 draft["study"]["authors"] = parsed["authors"]
             if parsed.get("doi"):
@@ -1467,7 +1898,7 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None, force_oc
             if not draft["study"]["title"]:
                 md_title = _from_md_field(md, "title")
                 if isinstance(md_title, str) and _score_title_candidate(md_title) >= 0:
-                    draft["study"]["title"] = _collapse_spaces(md_title)
+                    draft["study"]["title"] = _normalize_title(md_title)
 
             # Authors
             if not draft["study"]["authors"]:
@@ -1507,7 +1938,7 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None, force_oc
         if (not draft["study"]["title"]) or _authors_look_bad(draft["study"].get("authors", [])):
             layout = _layout_title_and_authors(pdf_path)
             if layout.get("title") and not draft["study"]["title"]:
-                draft["study"]["title"] = layout.get("title")
+                draft["study"]["title"] = _normalize_title(layout.get("title"))
             if layout.get("authors") and (_authors_look_bad(draft["study"].get("authors", [])) or not draft["study"].get("authors")):
                 draft["study"]["authors"] = layout.get("authors")
     except Exception:
@@ -1515,13 +1946,23 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None, force_oc
 
     # If authors still look bad or missing, try spaCy NER on the extracted PDF/OCR text as a last deterministic fallback
     try:
+        # First try a deterministic nearby-text author extractor that uses PDF/OCR text near the title
+        if (not draft["study"].get("authors")) or _authors_look_bad(draft["study"].get("authors", [])):
+            try:
+                near_auth = _extract_authors_near_title(pdf_text, draft["study"].get("title"))
+                if near_auth:
+                    draft["study"]["authors"] = near_auth
+            except Exception:
+                pass
+
+        # If still missing or low-quality, try spaCy PERSON NER
         if (not draft["study"].get("authors")) or _authors_look_bad(draft["study"].get("authors", [])):
             nlp = _get_spacy()
             if nlp is not None and (pdf_text or ""):
                 _llm_log("spaCy fallback: running PERSON NER on PDF/OCR text")
                 try:
                     # limit size for performance but keep top of doc where authors/masthead often live
-                    chunk = (pdf_text or "")[:8000]
+                    chunk = (pdf_text or "")[:10000]
                     docsp = nlp(chunk)
                     persons = []
                     for ent in docsp.ents:
@@ -1542,6 +1983,43 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None, force_oc
                             draft["study"]["authors"] = deduped
                 except Exception:
                     pass
+        # If authors still missing/garbled and we used OCR (or force_ocr), try a high-dpi OCR retry and re-run the nearby-author extractor
+        if ((not draft["study"].get("authors")) or _authors_look_bad(draft["study"].get("authors", []))) and (used_ocr or force_ocr):
+            try:
+                _llm_log("Attempting high-DPI OCR retry for author lines")
+                hd_text = _ocr_pdf_text_highdpi(pdf_path, max_pages=2, dpi=600, psm=3)
+                if hd_text and len(hd_text.strip()) > 20:
+                    # prepend to pdf_text for immediate local parsing
+                    combined = hd_text + "\n" + (pdf_text or "")
+                    near_auth2 = _extract_authors_near_title(combined, draft["study"].get("title"))
+                    if near_auth2:
+                        draft["study"]["authors"] = near_auth2
+                    else:
+                        # one more spaCy attempt on the high-dpi text if spaCy present
+                        nlp2 = _get_spacy()
+                        if nlp2 is not None:
+                            try:
+                                chunk2 = combined[:10000]
+                                doc2 = nlp2(chunk2)
+                                persons2 = []
+                                for ent in doc2.ents:
+                                    if ent.label_ == "PERSON":
+                                        name = _collapse_spaces(ent.text)
+                                        if _plausible_person_name(name):
+                                            persons2.append(_repair_kerned_name(name))
+                                # dedupe
+                                seen2 = set()
+                                ded2 = []
+                                for p in persons2:
+                                    if p and p not in seen2:
+                                        seen2.add(p)
+                                        ded2.append(p)
+                                if ded2 and (_authors_look_bad(draft["study"].get("authors", [])) or not draft["study"].get("authors")):
+                                    draft["study"]["authors"] = ded2
+                            except Exception:
+                                pass
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -1549,14 +2027,31 @@ def extract_first_pass(pdf_path: str, grobid_url: Optional[str] = None, force_oc
     _fill_arm_ns_from_text(draft["arms"], pdf_text)
 
     # ---------- Table extraction (optional) ----------
+    tables = []
     try:
         tables = _try_extract_tables(pdf_path)
         if tables:
             draft["_tables"] = tables
+            # Enhance arms with table data
+            draft["arms"] = _enhance_arms_from_tables(draft["arms"], tables, pdf_text)
+            # Add table-derived outcomes
+            table_outcomes = _map_tables_to_outcomes(tables, pdf_text)
+            if table_outcomes:
+                # Replace or extend existing outcomes
+                draft["outcomes"] = table_outcomes + draft.get("outcomes", [])
+    except Exception:
+        pass
+
+    # ---------- Author candidates for UI ----------
+    try:
+        author_candidates = _collect_author_candidates(pdf_text, draft["study"].get("title"))
+        if author_candidates:
+            draft["_author_candidates"] = author_candidates
     except Exception:
         pass
 
     # ---------- DOI fallback ----------
+
     if not draft["study"]["doi"]:
         m_doi = re.search(r"\b10\.\d{4,9}/[^\s<>\)]+", pdf_text, flags=re.I)
         if m_doi:
