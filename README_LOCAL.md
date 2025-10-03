@@ -13,6 +13,37 @@ This prototype now includes:
 - Python 3.10+
 - Node 18+
 
+## Windows (recommended) — Conda quickstart and smoke test
+
+If you're on Windows, using Miniforge/conda with Python 3.11 avoids many compiled build issues (spaCy, thinc, numpy). Example steps:
+
+1. Install Miniforge (https://github.com/conda-forge/miniforge/releases) and open a new PowerShell.
+2. Create and activate the env:
+
+```powershell
+Push-Location $env:USERPROFILE\Miniforge3\Scripts; .\conda.exe create -n trial-abst python=3.11 -c conda-forge -y; .\conda.exe activate trial-abst; Pop-Location
+```
+
+3. Install system binaries (poppler, tesseract, java) and key Python packages:
+
+```powershell
+Push-Location $env:USERPROFILE\Miniforge3\Scripts; .\conda.exe run -n trial-abst conda install -c conda-forge poppler tesseract openjdk -y; Pop-Location
+Push-Location $env:USERPROFILE\Miniforge3\Scripts; .\conda.exe run -n trial-abst python -m pip install -r backend/requirements.txt; Pop-Location
+# If you need spaCy model:
+Push-Location $env:USERPROFILE\Miniforge3\Scripts; .\conda.exe run -n trial-abst python -m spacy download en_core_web_sm; Pop-Location
+```
+
+4. Run the extraction smoke test (writes `backend/out_draft.json`):
+
+```powershell
+Push-Location $env:USERPROFILE\Miniforge3\Scripts; .\conda.exe run -n trial-abst python backend/run_extract.py; Pop-Location
+```
+
+Notes:
+- The runner will print a short summary (title/authors/_flags). If OCR is required, pass `force_ocr=True` (the runner already sets it).
+- Keep `backend/data/` directory in `.gitignore` to avoid committing large files.
+
+
 ## 1) Start the backend
 
 ```bash

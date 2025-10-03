@@ -120,6 +120,9 @@ def _layout_title_and_authors(pdf_path: str) -> Dict[str, Any]:
                     # heuristics: contain comma or multiple capitalized tokens and not affiliation words
                     if re.search(r"\b(university|hospital|department|center|institute|clinic)\b", t.lower()):
                         continue
+                    # avoid publisher/journal mastheads being mis-detected as authors
+                    if _is_journal_masthead(t):
+                        continue
                     toks = [tok for tok in re.split(r"[,\s]+", t) if tok.strip()]
                     # break comma-separated lists
                     for tok in toks:
@@ -129,7 +132,9 @@ def _layout_title_and_authors(pdf_path: str) -> Dict[str, Any]:
                             if len(tok.split()) <= 6 and not re.search(r"\b(and|for|the)\b", tok.lower()):
                                 authors_out.append(_repair_kerned_name(tok))
                 if authors_out:
-                    out["authors"] = authors_out
+                    # avoid sequences that are actually journal mastheads split into tokens
+                    if not _looks_like_masthead_tokens(authors_out):
+                        out["authors"] = authors_out
 
             # Try spaCy PERSON NER on the first page if available and authors look bad
             if (not out.get("authors")) and spacy is not None:
@@ -368,18 +373,20 @@ def _title_and_authors_from_text(text: str) -> Dict[str, Any]:
                 # author heuristics: contain comma-separated names or multiple capitalized tokens
                 if len(cand) < 4 or len(cand) > 200:
                     continue
-                if re.search(r",", cand) or len(re.findall(r"\b[A-Z][a-z]+\b", cand)) >= 2:
-                    # split commas, semicolons
-                    parts = [p.strip() for p in re.split(r"[,;]", cand) if p.strip()]
-                    for p in parts:
-                        p2 = _repair_kerned_name(_collapse_spaces(p))
-                        if _plausible_person_name(p2):
-                            authors_found.append(p2)
+                    if re.search(r",", cand) or len(re.findall(r"\b[A-Z][a-z]+\b", cand)) >= 2:
+                        # split commas, semicolons
+                        parts = [p.strip() for p in re.split(r"[,;]", cand) if p.strip()]
+                        for p in parts:
+                            p2 = _repair_kerned_name(_collapse_spaces(p))
+                            if _plausible_person_name(p2) and not _is_journal_masthead(p2):
+                                authors_found.append(p2)
                 # stop if we hit affiliation-like words
                 if re.search(r"\b(university|hospital|department|clinic|institute)\b", cand.lower()):
                     break
             if authors_found:
-                out["authors"] = authors_found
+                # filter masthead-token cases like ['New','England','Journal','Of','Medicine']
+                if not _looks_like_masthead_tokens(authors_found):
+                    out["authors"] = authors_found
             return out
 
     # fallback: take the longest line in the head as a naive title
@@ -400,6 +407,46 @@ def _title_and_authors_from_text(text: str) -> Dict[str, Any]:
                     break
 
     return out
+
+
+# ---------------- small helpers for masthead filtering ----------------
+_JOURNAL_MASTHEAD_PATTERNS = [
+    r"new\s+england\s+journal\s+of\s+medicine",
+    r"the\s+lancet",
+    r"british\s+medical\s+journal",
+    r"bmj\b",
+    r"jama\b",
+    r"annals\s+of\s+internal\s+medicine",
+    r"science\b",
+    r"nature\b",
+    r"plos\s+one",
+]
+_JOURNAL_MASTHEAD_RE = re.compile("|".join(_JOURNAL_MASTHEAD_PATTERNS), flags=re.I)
+
+
+def _is_journal_masthead(s: Optional[str]) -> bool:
+    if not s:
+        return False
+    t = _collapse_spaces(str(s)).lower()
+    # normalize punctuation out so 'New England Journal of Medicine' and 'NEJM' alike are matched
+    t2 = re.sub(r"[^a-z0-9\s]", " ", t)
+    return bool(_JOURNAL_MASTHEAD_RE.search(t2))
+
+
+def _looks_like_masthead_tokens(items: List[str]) -> bool:
+    """Detect cases where the 'authors' are actually a broken-up journal masthead like
+    ['New','England','Journal','Of','Medicine'] or ['The','Lancet'].
+    """
+    if not items:
+        return False
+    # If every item is a short single capitalized token and there are 2-8 tokens,
+    # join and test against masthead regex
+    if not (2 <= len(items) <= 8):
+        return False
+    joined = " ".join([_collapse_spaces(i) for i in items]).strip()
+    # if joined contains lowercase letters it's less likely masthead tokens, normalize
+    return _is_journal_masthead(joined)
+
 
 
 # ---------------- Heuristics ----------------
