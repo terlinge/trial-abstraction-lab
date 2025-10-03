@@ -29,6 +29,7 @@ type Draft = {
   outcomes: Outcome[];
   _flags?: { grobid?: boolean; llm?: boolean; ocr?: boolean; camelot_tables?: boolean };
   _tables?: any[];
+  _author_candidates?: string[]; // for reviewer widget
 };
 
 type ReviewField = {
@@ -221,19 +222,45 @@ function ReviewerPanel({
       const val =
         Array.isArray(rf.value) ? (rf.value as string[]).join("; ") : (rf.value ?? "");
       return (
-        <input
-          className="text"
-          placeholder="Custom authors (semicolon-separated)"
-          value={val}
-          onChange={(e) =>
-            setStudyField(k, {
-              value: e.target.value
-                .split(";")
-                .map((s) => s.trim())
-                .filter(Boolean),
-            })
-          }
-        />
+        <div>
+          <input
+            className="text"
+            placeholder="Custom authors (semicolon-separated)"
+            value={val}
+            onChange={(e) =>
+              setStudyField(k, {
+                value: e.target.value
+                  .split(";")
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              })
+            }
+          />
+          {/* Author candidate selector */}
+          {draft?._author_candidates && draft._author_candidates.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div className="label" style={{ fontSize: "0.85rem" }}>Author Candidates:</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+                {draft._author_candidates.map((candidate, idx) => (
+                  <button
+                    key={idx}
+                    className="btn ghost"
+                    style={{ fontSize: "0.8rem", padding: "4px 8px" }}
+                    onClick={() => {
+                      const current = Array.isArray(rf.value) ? rf.value : [];
+                      if (!current.includes(candidate)) {
+                        setStudyField(k, { value: [...current, candidate] });
+                      }
+                    }}
+                    title={`Add "${candidate}" to authors`}
+                  >
+                    + {candidate}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       );
     }
     if (k === "year") {
